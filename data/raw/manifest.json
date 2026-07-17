@@ -1,0 +1,27 @@
+{
+  "datasets": {
+    "BTC/USDT": {
+      "file": "BTC_USDT_1d.parquet",
+      "first_timestamp": "2022-01-01T00:00:00+00:00",
+      "last_timestamp": "2024-12-31T00:00:00+00:00",
+      "rows": 1096,
+      "sha256": "38fe5b62da40fbd64d2e57d9646d1da274772a709d5def896065ec6156a749a1"
+    },
+    "ETH/USDT": {
+      "file": "ETH_USDT_1d.parquet",
+      "first_timestamp": "2022-01-01T00:00:00+00:00",
+      "last_timestamp": "2024-12-31T00:00:00+00:00",
+      "rows": 1096,
+      "sha256": "95736c02eec8ff946b7f5ad132c6355cbab684ed110d15ac7c681026bea5c1fd"
+    }
+  },
+  "downloaded_at": "2026-07-17T13:39:12+00:00",
+  "end": "2024-12-31T00:00:00Z",
+  "source": {
+    "exchange": "binance",
+    "pandas": "2.3.3",
+    "via": "ccxt 4.5.66"
+  },
+  "start": "2022-01-01T00:00:00Z",
+  "timeframe": "1d"
+}
