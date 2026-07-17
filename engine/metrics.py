@@ -20,6 +20,7 @@ import pandas as pd
 from engine.backtest import BacktestResult
 
 PERIODS_PER_YEAR_CRYPTO = 365
+CALENDAR_DAYS_PER_YEAR = 365.25
 
 
 def total_return(returns: pd.Series) -> float:
@@ -41,6 +42,19 @@ def sharpe_ratio(returns: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CR
     if std == 0.0:
         return float("nan")
     return float(r.mean() / std * np.sqrt(periods_per_year))
+
+
+def sharpe_tstat(returns: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO) -> float:
+    """t-statistic of the annualized Sharpe: SR_ann * sqrt(n_years).
+
+    ``n_years = len(returns) / 365.25`` -- calendar-year convention, assumes DAILY bars.
+    Rule of thumb: |t| < 2 means the Sharpe is not statistically distinguishable from 0.
+    """
+    sr = sharpe_ratio(returns, periods_per_year)
+    if not np.isfinite(sr):
+        return float("nan")
+    n_years = len(returns) / CALENDAR_DAYS_PER_YEAR
+    return float(sr * np.sqrt(n_years))
 
 
 def sortino_ratio(returns: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO) -> float:
@@ -82,6 +96,7 @@ def summarize(
         "total_return": total_return(result.returns),
         "cagr": cagr(result.returns, periods_per_year),
         "sharpe": sharpe_ratio(result.returns, periods_per_year),
+        "t_stat": sharpe_tstat(result.returns, periods_per_year),
         "sortino": sortino_ratio(result.returns, periods_per_year),
         "max_drawdown": max_drawdown(result.returns),
         "annualized_turnover": annualized_turnover(result.turnover, periods_per_year),

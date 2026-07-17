@@ -5,16 +5,26 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+import numpy.typing as npt
 import pandas as pd
 
+FloatArray = Sequence[float] | npt.NDArray[np.float64]
 
-def make_prices(open_: Sequence[float], close: Sequence[float] | None = None) -> pd.DataFrame:
-    """Build an OHLCV frame from explicit open (and optionally close) prices."""
+
+def make_prices(
+    open_: FloatArray, close: FloatArray | None = None, freq: str = "D"
+) -> pd.DataFrame:
+    """Build an OHLCV frame from explicit open (and optionally close) prices.
+
+    ``freq`` only sets the synthetic index spacing (use "h" for very long series that
+    would overflow pandas' datetime64[ns] bounds with daily bars); the engine and the
+    metrics never read the index frequency.
+    """
     open_arr = np.asarray(open_, dtype="float64")
     close_arr = open_arr.copy() if close is None else np.asarray(close, dtype="float64")
     if len(open_arr) != len(close_arr):
         raise ValueError("open and close must have the same length")
-    index = pd.date_range("2023-01-01", periods=len(open_arr), freq="D", tz="UTC")
+    index = pd.date_range("2023-01-01", periods=len(open_arr), freq=freq, tz="UTC")
     return pd.DataFrame(
         {
             "open": open_arr,

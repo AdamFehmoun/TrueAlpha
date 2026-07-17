@@ -16,6 +16,11 @@ files = ["data", "engine", "strategies", "scripts", "tests"]
 module = ["ccxt", "ccxt.*"]
 ignore_missing_imports = true
 
+[[tool.mypy.overrides]]
+module = ["vectorbt", "vectorbt.*", "numba", "numba.*"]
+ignore_missing_imports = true
+follow_imports = "skip"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]

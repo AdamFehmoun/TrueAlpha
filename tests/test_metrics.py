@@ -12,6 +12,7 @@ from engine.metrics import (
     cagr,
     max_drawdown,
     sharpe_ratio,
+    sharpe_tstat,
     sortino_ratio,
     total_return,
     win_rate,
@@ -46,6 +47,18 @@ def test_sharpe_hand_computed() -> None:
 
 def test_sharpe_zero_volatility_is_nan() -> None:
     assert math.isnan(sharpe_ratio(_s([0.01, 0.01, 0.01])))
+
+
+def test_sharpe_tstat_hand_computed() -> None:
+    # SR_ann = 38.2099 (see test_sharpe_hand_computed); n_years = 3/365.25
+    # t = 38.2099 * sqrt(3/365.25) = 38.2099 * 0.0906286 = 3.4629
+    assert sharpe_tstat(_s([0.01, 0.02, 0.03]), periods_per_year=365) == pytest.approx(
+        3.4629, abs=1e-3
+    )
+
+
+def test_sharpe_tstat_zero_volatility_is_nan() -> None:
+    assert math.isnan(sharpe_tstat(_s([0.01, 0.01, 0.01])))
 
 
 def test_sortino_hand_computed() -> None:
