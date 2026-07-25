@@ -31,7 +31,7 @@ def test_total_return() -> None:
 def test_cagr_doubling_over_two_years_is_100pct_per_year() -> None:
     # growth 4x over 730 daily periods -> 4**(365/730) - 1 = 1.0
     returns = _s([3.0] + [0.0] * 729)
-    assert cagr(returns, periods_per_year=365) == pytest.approx(1.0, rel=1e-12)
+    assert cagr(returns, timeframe="1d") == pytest.approx(1.0, rel=1e-12)
 
 
 def test_cagr_total_wipeout_is_minus_100pct() -> None:
@@ -40,9 +40,7 @@ def test_cagr_total_wipeout_is_minus_100pct() -> None:
 
 def test_sharpe_hand_computed() -> None:
     # mean = 0.02, sample std (ddof=1) = 0.01 -> 2 * sqrt(365) = 38.2099...
-    assert sharpe_ratio(_s([0.01, 0.02, 0.03]), periods_per_year=365) == pytest.approx(
-        38.2099, abs=1e-3
-    )
+    assert sharpe_ratio(_s([0.01, 0.02, 0.03]), timeframe="1d") == pytest.approx(38.2099, abs=1e-3)
 
 
 def test_sharpe_zero_volatility_is_nan() -> None:
@@ -52,9 +50,7 @@ def test_sharpe_zero_volatility_is_nan() -> None:
 def test_sharpe_tstat_hand_computed() -> None:
     # SR_ann = 38.2099 (see test_sharpe_hand_computed); n_years = 3/365.25
     # t = 38.2099 * sqrt(3/365.25) = 38.2099 * 0.0906286 = 3.4629
-    assert sharpe_tstat(_s([0.01, 0.02, 0.03]), periods_per_year=365) == pytest.approx(
-        3.4629, abs=1e-3
-    )
+    assert sharpe_tstat(_s([0.01, 0.02, 0.03]), timeframe="1d") == pytest.approx(3.4629, abs=1e-3)
 
 
 def test_sharpe_tstat_zero_volatility_is_nan() -> None:
@@ -64,9 +60,7 @@ def test_sharpe_tstat_zero_volatility_is_nan() -> None:
 def test_sortino_hand_computed() -> None:
     # returns [0.02, -0.01, 0.03]: mean = 0.0133..., downside dev = sqrt(0.0001/3)
     # ratio = 2.3094, annualized = 2.3094 * 19.1050 = 44.122
-    assert sortino_ratio(_s([0.02, -0.01, 0.03]), periods_per_year=365) == pytest.approx(
-        44.122, abs=1e-2
-    )
+    assert sortino_ratio(_s([0.02, -0.01, 0.03]), timeframe="1d") == pytest.approx(44.122, abs=1e-2)
 
 
 def test_sortino_no_downside_positive_mean_is_inf() -> None:
@@ -88,7 +82,7 @@ def test_max_drawdown_monotonic_up_is_zero() -> None:
 
 def test_annualized_turnover_hand_computed() -> None:
     # total |trades| = 2 over 4 periods -> 2 * 365 / 4 = 182.5
-    assert annualized_turnover(_s([1.0, 0.0, 1.0, 0.0]), periods_per_year=365) == pytest.approx(
+    assert annualized_turnover(_s([1.0, 0.0, 1.0, 0.0]), timeframe="1d") == pytest.approx(
         182.5, abs=1e-12
     )
 

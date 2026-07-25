@@ -26,7 +26,7 @@ from engine.metrics import sharpe_ratio
 from tests.utils import make_prices
 
 N = 200_000
-A = 365  # the engine's annualization factor for daily crypto bars
+A = 365  # the engine's annualization factor for the default "1d" timeframe
 SEED = 20260717
 
 # (mean, std) per bar, chosen so 1 + r stays positive and cumprod stays in float range
@@ -39,8 +39,9 @@ CASES = [
 
 def _prices_from_returns(r: npt.NDArray[np.float64]) -> pd.DataFrame:
     levels = 100.0 * np.concatenate([[1.0], np.cumprod(1.0 + r)])
-    # hourly index only to stay inside datetime64[ns] bounds at N=200k bars;
-    # the metrics annualize per-bar with A=365 regardless of the index frequency
+    # hourly index only to stay inside datetime64[ns] bounds at N=200k bars; the
+    # metrics annualize per the timeframe ARGUMENT (default "1d" -> A=365), never
+    # by reading the index frequency
     return make_prices(levels, freq="h")
 
 
@@ -60,7 +61,7 @@ def test_engine_recovers_known_sharpe_and_vol(m: float, s: float) -> None:
     np.testing.assert_allclose(active, r[1:], rtol=1e-9, atol=1e-12)
 
     n = active.size
-    measured_sharpe = sharpe_ratio(pd.Series(active), periods_per_year=A)
+    measured_sharpe = sharpe_ratio(pd.Series(active))  # default "1d" -> sqrt(A)
     measured_vol = float(np.std(active, ddof=1) * math.sqrt(A))
     true_sharpe = m / s * math.sqrt(A)
     true_vol = s * math.sqrt(A)

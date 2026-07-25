@@ -39,7 +39,8 @@ and CI fails if any of it drifts.
 | Slippage | 0 bps by default, parameterizable (`BacktestConfig.slippage_bps`) |
 | Position sizing | Signal = target weight of equity; baselines are long/flat, no leverage |
 | MA crossover convention | Signal ∈ {0, 1} = **long-only** (long/flat); a long/short variant would use {−1, +1} |
-| Annualization | √365 (crypto trades every calendar day) |
+| Annualization | √(bars per year), driven by the `timeframe` field of `manifest.json`: √365 for 1d bars, √8760 for 1h bars (`engine.metrics.BARS_PER_YEAR` — crypto trades every calendar day) |
+| t-stat `n_years` | **Bar-count convention:** `n_years = n_bars / (365.25 × bars per day)` — a 365.25-day calendar year applied to the bar *count*, not the real index span (`engine.metrics.sharpe_tstat`) |
 | Risk-free rate | **0** — Sharpe, Sortino and t-stat are computed on raw returns, with no excess-return adjustment |
 | Not modeled | Funding, borrow costs, market impact beyond the slippage parameter |
 
@@ -101,7 +102,8 @@ notebooks/    exploration only; nothing in a notebook is a result
 - `ruff check` + `ruff format --check`
 - `mypy --strict`
 - `pytest`: data-hash reproducibility, anti-leakage validator, buy&hold identity,
-  per-metric unit tests, strategy causality tests
+  per-metric unit tests, strategy causality tests, frequency-safe annualization pins
+  (default √365 by name, hourly t-stat coherence)
 - Synthetic-recovery oracle: the engine + √365 annualization must recover a KNOWN
   (Sharpe, vol) from 200k i.i.d. synthetic returns, within a tolerance derived from
   sampling error (`tests/test_synthetic_recovery.py`)

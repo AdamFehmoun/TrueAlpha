@@ -2,8 +2,16 @@
 
 Conventions (documented once, applied everywhere):
 - Metrics take the per-period NET returns series produced by the backtest.
-- Annualization uses ``periods_per_year`` = 365 for daily crypto (markets trade every
-  day), scaling ratios by sqrt(365).
+- Frequency: every annualizing function takes an explicit ``timeframe`` parameter,
+  defaulting to ``"1d"`` (daily bars). The timeframe string is the single source of
+  truth for frequency, propagated from the data manifest's ``timeframe`` field; the
+  supported values and their annualization factors live in ``BARS_PER_YEAR``
+  (crypto trades around the clock: 365 daily bars or 8760 hourly bars per year).
+- Ratios (Sharpe, Sortino) scale by sqrt(BARS_PER_YEAR[timeframe]).
+- The t-stat converts the bar count into CALENDAR years via
+  ``CALENDAR_BARS_PER_YEAR`` (= 365.25 x bars per day, leap-year-aware). This is the
+  BAR-COUNT convention -- ``n_years = len(returns) / calendar_bars_per_year(tf)`` --
+  not the real index span; the choice is documented in the README next to the numbers.
 - Risk-free rate is 0.
 - Sharpe uses the sample standard deviation (ddof=1); zero volatility -> NaN.
 - Sortino's downside deviation is sqrt(mean(min(r, 0)^2)) over ALL periods (target 0);
@@ -14,13 +22,48 @@ Conventions (documented once, applied everywhere):
 
 from __future__ import annotations
 
+from typing import Final
+
 import numpy as np
 import pandas as pd
 
 from engine.backtest import BacktestResult
 
-PERIODS_PER_YEAR_CRYPTO = 365
-CALENDAR_DAYS_PER_YEAR = 365.25
+DEFAULT_TIMEFRAME: Final = "1d"
+
+_DAYS_PER_YEAR: Final = 365  # crypto trades every calendar day
+_CALENDAR_DAYS_PER_YEAR: Final = 365.25  # mean calendar-year length (leap-year-aware)
+_BARS_PER_DAY: Final[dict[str, int]] = {"1d": 1, "1h": 24}
+
+# Annualization factor per timeframe: number of bars in a (trading) year.
+BARS_PER_YEAR: Final[dict[str, int]] = {
+    tf: _DAYS_PER_YEAR * bars for tf, bars in _BARS_PER_DAY.items()
+}
+# Bars per CALENDAR year, used ONLY to turn a bar count into a number of years for
+# the t-stat. 365.25 preserves the pre-frequency-aware daily t-stat bit-for-bit.
+CALENDAR_BARS_PER_YEAR: Final[dict[str, float]] = {
+    tf: _CALENDAR_DAYS_PER_YEAR * bars for tf, bars in _BARS_PER_DAY.items()
+}
+
+
+def bars_per_year(timeframe: str) -> int:
+    """Annualization factor for ``timeframe``: 365 for "1d", 8760 for "1h"."""
+    try:
+        return BARS_PER_YEAR[timeframe]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported timeframe {timeframe!r}; supported: {sorted(BARS_PER_YEAR)}"
+        ) from exc
+
+
+def calendar_bars_per_year(timeframe: str) -> float:
+    """Bars per calendar year (365.25 x bars/day), used by the t-stat's n_years."""
+    try:
+        return CALENDAR_BARS_PER_YEAR[timeframe]
+    except KeyError as exc:
+        raise ValueError(
+            f"unsupported timeframe {timeframe!r}; supported: {sorted(CALENDAR_BARS_PER_YEAR)}"
+        ) from exc
 
 
 def total_return(returns: pd.Series) -> float:
@@ -28,43 +71,47 @@ def total_return(returns: pd.Series) -> float:
     return float(np.prod(1.0 + r) - 1.0)
 
 
-def cagr(returns: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO) -> float:
+def cagr(returns: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> float:
     r = returns.to_numpy(dtype="float64")
     growth = float(np.prod(1.0 + r))
     if growth <= 0.0:
         return -1.0
-    return float(growth ** (periods_per_year / len(r)) - 1.0)
+    return float(growth ** (bars_per_year(timeframe) / len(r)) - 1.0)
 
 
-def sharpe_ratio(returns: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO) -> float:
+def sharpe_ratio(returns: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> float:
     r = returns.to_numpy(dtype="float64")
+    periods = bars_per_year(timeframe)
     std = float(r.std(ddof=1))
     if std == 0.0:
         return float("nan")
-    return float(r.mean() / std * np.sqrt(periods_per_year))
+    return float(r.mean() / std * np.sqrt(periods))
 
 
-def sharpe_tstat(returns: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO) -> float:
+def sharpe_tstat(returns: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> float:
     """t-statistic of the annualized Sharpe: SR_ann * sqrt(n_years).
 
-    ``n_years = len(returns) / 365.25`` -- calendar-year convention, assumes DAILY bars.
-    Rule of thumb: |t| < 2 means the Sharpe is not statistically distinguishable from 0.
+    ``n_years = len(returns) / calendar_bars_per_year(timeframe)`` -- the BAR-COUNT
+    convention (not the index span), with a 365.25-day calendar year; for "1d" this
+    is exactly the historical behavior (n_bars / 365.25), for "1h" it divides by
+    8766 = 24 x 365.25. Rule of thumb: |t| < 2 means the Sharpe is not statistically
+    distinguishable from 0.
     """
-    sr = sharpe_ratio(returns, periods_per_year)
+    sr = sharpe_ratio(returns, timeframe)
     if not np.isfinite(sr):
         return float("nan")
-    n_years = len(returns) / CALENDAR_DAYS_PER_YEAR
+    n_years = len(returns) / calendar_bars_per_year(timeframe)
     return float(sr * np.sqrt(n_years))
 
 
-def sortino_ratio(returns: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO) -> float:
+def sortino_ratio(returns: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> float:
     r = returns.to_numpy(dtype="float64")
     downside = np.minimum(r, 0.0)
     downside_dev = float(np.sqrt(np.mean(downside**2)))
     mean = float(r.mean())
     if downside_dev == 0.0:
         return float("inf") if mean > 0.0 else float("nan")
-    return float(mean / downside_dev * np.sqrt(periods_per_year))
+    return float(mean / downside_dev * np.sqrt(bars_per_year(timeframe)))
 
 
 def max_drawdown(returns: pd.Series) -> float:
@@ -74,11 +121,9 @@ def max_drawdown(returns: pd.Series) -> float:
     return float(np.min(equity / peak - 1.0))
 
 
-def annualized_turnover(
-    turnover: pd.Series, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO
-) -> float:
+def annualized_turnover(turnover: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> float:
     """Total traded notional (in units of equity) per year."""
-    return float(turnover.sum() * periods_per_year / len(turnover))
+    return float(turnover.sum() * bars_per_year(timeframe) / len(turnover))
 
 
 def win_rate(returns: pd.Series, positions: pd.Series) -> float:
@@ -89,16 +134,14 @@ def win_rate(returns: pd.Series, positions: pd.Series) -> float:
     return float((r > 0.0).mean())
 
 
-def summarize(
-    result: BacktestResult, periods_per_year: int = PERIODS_PER_YEAR_CRYPTO
-) -> dict[str, float]:
+def summarize(result: BacktestResult, timeframe: str = DEFAULT_TIMEFRAME) -> dict[str, float]:
     return {
         "total_return": total_return(result.returns),
-        "cagr": cagr(result.returns, periods_per_year),
-        "sharpe": sharpe_ratio(result.returns, periods_per_year),
-        "t_stat": sharpe_tstat(result.returns, periods_per_year),
-        "sortino": sortino_ratio(result.returns, periods_per_year),
+        "cagr": cagr(result.returns, timeframe),
+        "sharpe": sharpe_ratio(result.returns, timeframe),
+        "t_stat": sharpe_tstat(result.returns, timeframe),
+        "sortino": sortino_ratio(result.returns, timeframe),
         "max_drawdown": max_drawdown(result.returns),
-        "annualized_turnover": annualized_turnover(result.turnover, periods_per_year),
+        "annualized_turnover": annualized_turnover(result.turnover, timeframe),
         "win_rate": win_rate(result.returns, result.positions),
     }
