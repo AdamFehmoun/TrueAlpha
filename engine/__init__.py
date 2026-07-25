@@ -22,6 +22,7 @@ from engine.splits import (
     TemporalSplit,
     assert_no_leakage,
     temporal_train_test_split,
+    walk_forward_splits,
 )
 
 __all__ = [
@@ -45,5 +46,6 @@ __all__ = [
     "summarize",
     "temporal_train_test_split",
     "total_return",
+    "walk_forward_splits",
     "win_rate",
 ]
