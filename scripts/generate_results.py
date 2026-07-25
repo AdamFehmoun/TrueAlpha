@@ -1,9 +1,10 @@
-"""Regenerate the auto-generated results section of README.md.
+"""Regenerate the auto-generated results sections of README.md.
 
 Every number displayed in the README comes from this script -- numbers are never
-written by hand. Run with:
+written by hand. Two blocks are generated: the full-sample baselines (RESULTS
+markers) and the walk-forward out-of-sample evaluation (WALKFORWARD markers). Run:
 
-    python -m scripts.generate_results          # rewrite the README section
+    python -m scripts.generate_results          # rewrite the README sections
     python -m scripts.generate_results --check  # fail if README is out of sync (CI)
 """
 
@@ -12,7 +13,7 @@ from __future__ import annotations
 import argparse
 import math
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -21,12 +22,22 @@ import pandas as pd
 from data.download import END, START, SYMBOLS
 from data.loader import load_ohlcv, read_manifest
 from engine.backtest import BacktestConfig, run_backtest
-from engine.metrics import bars_per_year, calendar_bars_per_year, summarize
+from engine.evaluate import WalkForwardResult, walk_forward_evaluate
+from engine.metrics import (
+    bars_per_year,
+    calendar_bars_per_year,
+    sharpe_ratio,
+    sharpe_tstat,
+    summarize,
+)
+from engine.splits import walk_forward_splits
 from strategies import buy_and_hold_signal, ma_crossover_signal
 
 README_PATH = Path(__file__).resolve().parent.parent / "README.md"
 BEGIN_MARK = "<!-- RESULTS:BEGIN -->"
 END_MARK = "<!-- RESULTS:END -->"
+WF_BEGIN_MARK = "<!-- WALKFORWARD:BEGIN -->"
+WF_END_MARK = "<!-- WALKFORWARD:END -->"
 
 CONFIG = BacktestConfig(fee_bps=10.0, slippage_bps=0.0)
 
@@ -35,6 +46,27 @@ STRATEGIES: list[tuple[str, Callable[[pd.DataFrame], pd.Series]]] = [
     # named to match the code: the signal is {0, 1} = long-only (long/flat), never short
     ("MA crossover 20/50 (long-only)", ma_crossover_signal),
 ]
+
+# --- walk-forward protocol: declared here, before any result ------------------- #
+WF_N_FOLDS = 5
+WF_TEST_SIZE = 0.2
+# purge = slow_max, the longest look-back any grid candidate uses; never reduced to
+# make folds fit (the split constructor raises instead)
+WF_PURGE = 200
+WF_EMBARGO = 5
+WF_SELECTION_METRIC = "sharpe"
+WF_GRID: list[dict[str, Any]] = [
+    {"fast": fast, "slow": slow}
+    for fast in (5, 10, 20, 50)
+    for slow in (20, 50, 100, 200)
+    if fast < slow
+]
+
+# --- pre-registered expectations (see the README's dated pre-registration) ----- #
+PREREG_SHARPE_LO = -0.3
+PREREG_SHARPE_HI = 0.4
+PREREG_TSTAT_MAX = 1.0
+PREREG_ALARM_SHARPE = 1.0
 
 
 def _pct(x: float) -> str:
@@ -128,10 +160,125 @@ def build_block() -> str:
     return "\n".join(lines)
 
 
-def splice(readme: str, block: str) -> str:
-    begin = readme.index(BEGIN_MARK)
-    end = readme.index(END_MARK) + len(END_MARK)
-    return readme[:begin] + block + readme[end:]
+def _ma_factory(prices: pd.DataFrame, params: Mapping[str, Any]) -> pd.Series:
+    return ma_crossover_signal(prices, fast=int(params["fast"]), slow=int(params["slow"]))
+
+
+def _fold_rows(prices: pd.DataFrame, result: WalkForwardResult) -> list[str]:
+    rows: list[str] = []
+    for f in result.folds:
+        train, test = f.split.train, f.split.test
+        train_0, train_1 = prices.index[train[0]], prices.index[train[-1]]
+        test_0, test_1 = prices.index[test[0]], prices.index[test[-1]]
+        test_sharpe = sharpe_ratio(f.test_result.returns, result.timeframe)
+        test_tstat = sharpe_tstat(f.test_result.returns, result.timeframe)
+        rows.append(
+            f"| {f.fold + 1} | {train_0:%Y-%m-%d} → {train_1:%Y-%m-%d} ({len(train)}) "
+            f"| {test_0:%Y-%m-%d} → {test_1:%Y-%m-%d} ({len(test)}) "
+            f"| {f.params['fast']}/{f.params['slow']} "
+            f"| {_num(f.train_metric)} | {_num(test_sharpe)} | {_num(test_tstat)} |"
+        )
+    return rows
+
+
+def _overfit_note(result: WalkForwardResult) -> str:
+    gaps: list[float] = []
+    below = 0
+    for f in result.folds:
+        test_sharpe = sharpe_ratio(f.test_result.returns, result.timeframe)
+        if math.isfinite(test_sharpe):
+            gaps.append(f.train_metric - test_sharpe)
+            if test_sharpe < f.train_metric:
+                below += 1
+    if not gaps:
+        return "**Overfit gap (train − test Sharpe):** not computable (no finite test Sharpe)."
+    mean_gap = sum(gaps) / len(gaps)
+    return (
+        f"**Overfit gap (train − test Sharpe):** mean {mean_gap:+.2f} · test Sharpe below "
+        f"train Sharpe on {below}/{len(result.folds)} folds — the gap is the overfit "
+        "measure, displayed on purpose."
+    )
+
+
+def _prereg_note(symbol: str, metrics: Mapping[str, float]) -> str:
+    oos_sharpe, oos_tstat = metrics["sharpe"], metrics["t_stat"]
+    in_range = PREREG_SHARPE_LO <= oos_sharpe <= PREREG_SHARPE_HI
+    t_ok = abs(oos_tstat) < PREREG_TSTAT_MAX
+    note = (
+        f"**{symbol}:** OOS Sharpe {oos_sharpe:.2f} "
+        f"{'inside' if in_range else '**OUTSIDE**'} the pre-registered "
+        f"[{PREREG_SHARPE_LO:+.1f}, {PREREG_SHARPE_HI:+.1f}] · "
+        f"|t| = {abs(oos_tstat):.2f} {'<' if t_ok else '≥'} {PREREG_TSTAT_MAX:.0f}"
+    )
+    if oos_sharpe > PREREG_ALARM_SHARPE:
+        note += (
+            " — **ALARM: an OOS Sharpe > 1.0 on this sample means suspect a bug or a "
+            "leak; re-check the two blindness invariants before believing it**"
+        )
+    return note
+
+
+def build_walkforward_block() -> str:
+    manifest = read_manifest()
+    timeframe = str(manifest["timeframe"])
+    prices_by_symbol = {symbol: load_ohlcv(symbol) for symbol in SYMBOLS}
+    (n_samples,) = {len(p) for p in prices_by_symbol.values()}
+    n_test = int(round(n_samples * WF_TEST_SIZE))
+
+    lines = [
+        WF_BEGIN_MARK,
+        "_Generated by `python -m scripts.generate_results` — do not edit by hand"
+        " (CI enforces sync)._",
+        "",
+        f"**Protocol:** {WF_N_FOLDS} anchored walk-forward folds · OOS region = last "
+        f"{n_test} of {n_samples} bars (test_size {WF_TEST_SIZE}), tiled by contiguous "
+        f"test windows · purge {WF_PURGE} bars (= slow_max, the grid's longest "
+        f"look-back) · embargo {WF_EMBARGO} bars · selection: argmax of TRAIN "
+        f"{WF_SELECTION_METRIC} over the declared grid ({len(WF_GRID)} combos: "
+        "fast ∈ {5, 10, 20, 50}, slow ∈ {20, 50, 100, 200}, fast < slow) · "
+        f"costs {CONFIG.fee_bps:.0f} bps fee + {CONFIG.slippage_bps:.0f} bps slippage "
+        "per trade · execution: signal at close[t], fill at open[t+1] · each window is "
+        "backtested standalone (starts flat; bars before a window feed the MAs as "
+        "look-back; parameter choice sees train only).",
+    ]
+    prereg_notes: list[str] = []
+    for symbol, prices in prices_by_symbol.items():
+        splits = walk_forward_splits(
+            len(prices), WF_N_FOLDS, WF_TEST_SIZE, WF_PURGE, WF_EMBARGO, anchored=True
+        )
+        result = walk_forward_evaluate(
+            prices, _ma_factory, WF_GRID, splits, CONFIG, WF_SELECTION_METRIC, timeframe
+        )
+        m = result.metrics
+        lines += [
+            "",
+            f"### {symbol}",
+            "",
+            "| Fold | Train (bars) | Test (bars) | Params fast/slow | Sharpe train "
+            "| Sharpe test | t-stat test |",
+            "|---|---|---|---|---|---|---|",
+            *_fold_rows(prices, result),
+            "",
+            f"**OOS, {len(result.oos.returns)} concatenated test bars:** "
+            f"Sharpe {_num(m['sharpe'])} · t-stat {_num(m['t_stat'])} · "
+            f"total return {_pct(m['total_return'])} · "
+            f"max drawdown {_pct(m['max_drawdown'])} · "
+            f"ann. turnover {m['annualized_turnover']:.1f} · Sortino {_num(m['sortino'])} · "
+            f"win rate {_pct_unsigned(m['win_rate'])}",
+            "",
+            _overfit_note(result),
+        ]
+        prereg_notes.append(_prereg_note(symbol, m))
+    lines += ["", "**Pre-registration check (auto-generated against the dated ranges above):**", ""]
+    lines += [f"- {note}" for note in prereg_notes]
+    lines.append(WF_END_MARK)
+    return "\n".join(lines)
+
+
+def splice(readme: str, block: str, begin: str, end: str) -> str:
+    begin_at = readme.index(begin)
+    end_at = readme.index(end) + len(end)
+    return readme[:begin_at] + block + readme[end_at:]
 
 
 def main() -> int:
@@ -142,11 +289,13 @@ def main() -> int:
     args = parser.parse_args()
 
     readme = README_PATH.read_text()
-    if BEGIN_MARK not in readme or END_MARK not in readme:
-        print(f"ERROR: result markers not found in {README_PATH}", file=sys.stderr)
-        return 1
+    for begin, end in ((BEGIN_MARK, END_MARK), (WF_BEGIN_MARK, WF_END_MARK)):
+        if begin not in readme or end not in readme:
+            print(f"ERROR: markers {begin} … {end} not found in {README_PATH}", file=sys.stderr)
+            return 1
 
-    updated = splice(readme, build_block())
+    updated = splice(readme, build_block(), BEGIN_MARK, END_MARK)
+    updated = splice(updated, build_walkforward_block(), WF_BEGIN_MARK, WF_END_MARK)
     if args.check:
         if updated != readme:
             print(
@@ -159,7 +308,7 @@ def main() -> int:
         return 0
 
     README_PATH.write_text(updated)
-    print(f"README results section regenerated in {README_PATH}")
+    print(f"README results sections regenerated in {README_PATH}")
     return 0
 
 

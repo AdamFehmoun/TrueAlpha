@@ -1,6 +1,7 @@
 """Backtest engine: leak-safe splits, vectorized backtest, tested metrics."""
 
 from engine.backtest import BacktestConfig, BacktestResult, run_backtest
+from engine.evaluate import FoldResult, WalkForwardResult, walk_forward_evaluate
 from engine.metrics import (
     BARS_PER_YEAR,
     CALENDAR_BARS_PER_YEAR,
@@ -31,8 +32,10 @@ __all__ = [
     "DEFAULT_TIMEFRAME",
     "BacktestConfig",
     "BacktestResult",
+    "FoldResult",
     "LeakageError",
     "TemporalSplit",
+    "WalkForwardResult",
     "annualized_turnover",
     "assert_no_leakage",
     "bars_per_year",
@@ -46,6 +49,7 @@ __all__ = [
     "summarize",
     "temporal_train_test_split",
     "total_return",
+    "walk_forward_evaluate",
     "walk_forward_splits",
     "win_rate",
 ]
