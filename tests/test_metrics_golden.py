@@ -102,6 +102,20 @@ def test_prereg_constants_match_the_dated_readme_prose() -> None:
     assert f"OOS Sharpe > {PREREG_ALARM_SHARPE:.1f}" in readme
 
 
+def test_carried_boundaries_are_exactly_one_per_symbol_and_config(computed: Computed) -> None:
+    """A3 pin: on the published 1d runs, exactly ONE fold boundary carries a
+    position (fold 4 -> fold 5, 2024-11-17 -> 2024-11-18) for each symbol, in BOTH
+    configurations. This count is what moved the OOS figures when splicing was
+    introduced; if it ever changes, the published numbers move with it -- so it is
+    asserted here, from the engine's own counter."""
+    for symbol, by_config in computed.walkforward.items():
+        for config_name, result in by_config.items():
+            assert result.n_carried_boundaries == 1, (
+                f"{symbol} {config_name}: expected exactly 1 carried boundary, "
+                f"got {result.n_carried_boundaries}"
+            )
+
+
 def test_prereg_correction_note_numbers_match_the_computed_run(computed: Computed) -> None:
     """The dated 2026-07-26 correction note quotes data-derived numbers (range width
     in SE, per-symbol deviations in SE, before and after the splice correction);

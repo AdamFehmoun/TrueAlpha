@@ -198,6 +198,66 @@ def test_gapped_test_window_is_rejected() -> None:
         walk_forward_evaluate(prices, _ma_factory, GRID, [bad], COSTS)
 
 
+def test_unknown_calendar_hole_is_rejected_loudly_and_listed() -> None:
+    """A bar missing from the CALENDAR (a data hole) that is NOT whitelisted must
+    fail loudly and be listed by timestamp -- the walk-forward validator applies
+    the same hole discipline as the data loader. (Positional indices stay
+    contiguous when a row is absent from the frame, so the positional check alone
+    cannot see this; the calendar check must.)"""
+    full = make_prices((100.0 * np.cumprod(1.0 + np.full(400, 0.003))).tolist())
+    dropped_ts = full.index[350]
+    holey = full.drop(index=dropped_ts)
+    splits = walk_forward_splits(len(holey), n_folds=1, test_size=0.2, purge=30, embargo=0)
+    with pytest.raises(ValueError, match="not whitelisted") as excinfo:
+        walk_forward_evaluate(holey, _ma_factory, [{"fast": 5, "slow": 20}], splits, COSTS)
+    assert dropped_ts.isoformat() in str(excinfo.value)  # the hole is LISTED
+
+
+def test_whitelisted_hole_is_accepted_and_stays_a_hole() -> None:
+    """A hole in the whitelist (the manifest's pinned missing_bars) is accepted:
+    the run completes, NO bar is invented at the hole's timestamp, and the position
+    is simply held across it (the pre-hole bar marks at the next available open --
+    real market movement, not an invented return)."""
+    full = make_prices((100.0 * np.cumprod(1.0 + np.full(400, 0.003))).tolist())
+    dropped_ts = full.index[350]
+    holey = full.drop(index=dropped_ts)
+    splits = walk_forward_splits(len(holey), n_folds=1, test_size=0.2, purge=30, embargo=0)
+    result = walk_forward_evaluate(
+        holey,
+        _ma_factory,
+        [{"fast": 5, "slow": 20}],
+        splits,
+        COSTS,
+        known_holes=pd.DatetimeIndex([dropped_ts]),
+    )
+    assert dropped_ts not in result.oos.returns.index  # still a hole: nothing invented
+    assert len(result.oos.returns) == len(splits[0].test)
+    hole_side = int(
+        result.oos.positions.index.get_indexer(pd.DatetimeIndex([dropped_ts]), method="ffill")[0]
+    )
+    assert float(result.oos.positions.iloc[hole_side]) == 1.0  # held across the hole
+
+
+def test_hole_whitelist_mechanism_leaves_gap_free_results_bit_identical() -> None:
+    """On gap-free data the whitelist mechanism must change NOTHING, bit-for-bit:
+    no whitelist, an empty whitelist, and an unused whitelist entry all produce
+    identical results. (On the real gap-free 1d data the same guarantee is enforced
+    byte-for-byte by test_metrics_golden.py.)"""
+    prices = random_walk_prices(400, seed=13)
+    splits = walk_forward_splits(400, n_folds=4, test_size=0.3, purge=30, embargo=2)
+    base = walk_forward_evaluate(prices, _ma_factory, GRID, splits, COSTS)
+    for whitelist in (
+        pd.DatetimeIndex([]),
+        pd.DatetimeIndex([prices.index[0] - pd.Timedelta(days=30)]),  # unused entry
+    ):
+        other = walk_forward_evaluate(
+            prices, _ma_factory, GRID, splits, COSTS, known_holes=whitelist
+        )
+        pd.testing.assert_series_equal(other.oos.returns, base.oos.returns, check_exact=True)
+        assert other.metrics == base.metrics
+        assert [f.params for f in other.folds] == [f.params for f in base.folds]
+
+
 def test_gapped_train_window_is_rejected() -> None:
     """Same guard for the TRAIN window: a gapped train would silently misprice
     every selection candidate through the same compressed-gap marking."""
@@ -345,6 +405,76 @@ def test_param_change_resets_position_to_flat_between_folds() -> None:
     assert changes, "fixture dégénérée : aucun changement de paramètres à tester"
     for k in changes:
         assert float(result.folds[k].test_result.positions.iloc[0]) == 0.0
+
+
+def test_non_adjacent_same_param_folds_do_not_splice() -> None:
+    """Two folds may retain the SAME parameters and still be separated by a time
+    gap (hand-built splits): the splice rule must NOT glue them. Gluing would carry
+    a position across bars the evaluation excludes and mark the pre-gap bar at an
+    open beyond the gap -- silent mispricing. The second fold must start flat, its
+    returns must equal a standalone backtest of its own window, and no boundary may
+    count as carried. (Born of mutation M7, which survived the previous suite.)"""
+    prices = make_prices((100.0 * np.cumprod(1.0 + np.full(400, 0.003))).tolist())
+    single = [{"fast": 5, "slow": 20}]
+    fold_a = TemporalSplit(
+        train=np.arange(0, 200, dtype=np.int64),
+        test=np.arange(230, 270, dtype=np.int64),
+        purge=30,
+        embargo=0,
+    )
+    fold_b = TemporalSplit(
+        train=np.arange(0, 260, dtype=np.int64),
+        test=np.arange(290, 330, dtype=np.int64),
+        purge=30,
+        embargo=0,
+    )
+    result = walk_forward_evaluate(prices, _ma_factory, single, [fold_a, fold_b], COSTS)
+    assert result.folds[0].params == result.folds[1].params  # same params, on purpose
+
+    history = prices.iloc[:330]
+    signal = _ma_factory(history, single[0])
+    # anti-vacuity: the signal IS long at the pre-gap boundary bar, so an incorrect
+    # glue would necessarily carry a non-zero position -- this test cannot pass
+    # vacuously the way an all-flat boundary would let it
+    assert float(signal.iloc[269]) == 1.0
+
+    assert result.n_carried_boundaries == 0
+    assert float(result.folds[1].test_result.positions.iloc[0]) == 0.0  # no carry over the gap
+    standalone = run_backtest(prices.iloc[290:330], signal.iloc[290:330], COSTS)
+    pd.testing.assert_series_equal(
+        result.folds[1].test_result.returns, standalone.returns, check_exact=True
+    )
+
+
+def test_n_carried_boundaries_is_counted_by_the_engine() -> None:
+    """The number that moved the OOS figures when splicing was introduced is a
+    first-class, engine-counted output -- never inferred by hand.
+
+    Cross-checked two ways: against the per-fold position slices (catches offset /
+    bookkeeping bugs in the segment slicing), and on the two-regime fixture where a
+    param-change boundary must never count as carried."""
+    prices = random_walk_prices(400, seed=21)
+    splits = walk_forward_splits(400, n_folds=4, test_size=0.3, purge=60, embargo=2)
+    result = walk_forward_evaluate(prices, _ma_factory, [{"fast": 5, "slow": 20}], splits, COSTS)
+    from_slices = sum(
+        1
+        for k in range(1, len(result.folds))
+        if float(result.folds[k].test_result.positions.iloc[0]) != 0.0
+    )
+    assert result.n_carried_boundaries == from_slices
+    assert result.n_carried_boundaries > 0, (
+        "fixture dégénérée : aucune frontière portante, le compteur n'est pas testé"
+    )
+
+    prices2, splits2 = _mobile_fixture()
+    result2 = walk_forward_evaluate(prices2, _ma_factory, MOBILE_GRID, splits2, COSTS)
+    carried_at_same_param_boundaries = sum(
+        1
+        for k in range(1, len(result2.folds))
+        if result2.folds[k].params == result2.folds[k - 1].params
+        and float(result2.folds[k].test_result.positions.iloc[0]) != 0.0
+    )
+    assert result2.n_carried_boundaries == carried_at_same_param_boundaries
 
 
 # --------------------------------------------------------------------------- #

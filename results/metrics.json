@@ -252,6 +252,7 @@
             "train_start": "2022-01-01T00:00:00+00:00"
           }
         ],
+        "n_carried_boundaries": 1,
         "oos": {
           "annualized_turnover": 11.666666666666666,
           "cagr": -0.2138751602725334,
@@ -363,6 +364,7 @@
             "train_start": "2022-06-25T00:00:00+00:00"
           }
         ],
+        "n_carried_boundaries": 1,
         "oos": {
           "annualized_turnover": 11.666666666666666,
           "cagr": -0.2138751602725334,
@@ -476,6 +478,7 @@
             "train_start": "2022-01-01T00:00:00+00:00"
           }
         ],
+        "n_carried_boundaries": 1,
         "oos": {
           "annualized_turnover": 8.333333333333334,
           "cagr": -0.41702655796660204,
@@ -587,6 +590,7 @@
             "train_start": "2022-06-25T00:00:00+00:00"
           }
         ],
+        "n_carried_boundaries": 1,
         "oos": {
           "annualized_turnover": 8.333333333333334,
           "cagr": -0.41702655796660204,
