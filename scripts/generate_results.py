@@ -452,24 +452,32 @@ def _unbilled_exits(result: WalkForwardResult) -> tuple[int, int, float]:
 
 
 def _exit_fee_note(result: WalkForwardResult) -> str:
-    """B-known bias, stated with its exact formula and engine-counted occurrences."""
+    """Known bias: the unbilled FEE and its exact effect on total_return, kept apart."""
     param_exits, terminal_exits, final_abs = _unbilled_exits(result)
-    total = param_exits + terminal_exits
-    per_exit_bps = (CONFIG.fee_bps + CONFIG.slippage_bps) * final_abs
     return (
         "**Known bias — unbilled exit fees (optimistic and one-directional):** the "
         "engine's turnover is `|Δposition|` within a run "
         "(`positions.diff().abs().fillna(positions.abs())`) and no terminal "
-        "liquidation is ever charged, so at every segment end whose outgoing "
-        "position `p` is non-zero, `cost_rate × |p|` = "
-        f"`(fee_bps + slippage_bps)/10⁴ × |p|` — exactly "
-        f"{CONFIG.fee_bps + CONFIG.slippage_bps:.0f} bp at the published costs with "
-        f"`p = 1.0` — goes unbilled. This run: **{total} unbilled exit(s)** "
-        f"({param_exits} at parameter-change boundaries, {terminal_exits} at the OOS "
-        f"end, final position {final_abs:.1f}, ≈ {per_exit_bps:.0f} bp unbilled). The "
-        "full-sample baselines share the same convention (the buy-and-hold identity "
-        "is 'gross return net of the single entry fee'). The engine is deliberately "
-        "unchanged: a different fee convention would move every published figure."
+        "liquidation is ever charged. Two different numbers, deliberately kept "
+        "apart: (i) the unbilled FEE at every segment end whose outgoing position "
+        "`p` is non-zero is `cost_rate × |p|` = `(fee_bps + slippage_bps)/10⁴ × |p|` "
+        f"— exactly {CONFIG.fee_bps + CONFIG.slippage_bps:.0f} bp at the published "
+        "costs with `p = 1.0`; (ii) the exact effect on the published TOTAL RETURN "
+        "is smaller, because equity has already moved when the exit occurs: "
+        "re-billing the missing exit(s) and recompounding gives "
+        f"**{result.exit_fee_bias_bps:+.4f} bp** on this run "
+        "(`exit_fee_bias_bps`, engine-computed; for a single segment with terminal "
+        "exit it equals `(1 + total_return) × cost_rate`). This run: "
+        f"{result.n_segments} segment(s), {result.n_uncharged_exits} uncharged "
+        f"exit(s) ({param_exits} at parameter-change boundaries, {terminal_exits} at "
+        f"the OOS end, final position {final_abs:.1f}). Method note: the exit is "
+        "re-billed at the LAST bar of its segment, where a continuous book would "
+        "bill it at the FIRST bar of the next segment — exact in amount, one bar "
+        "off in timing; without effect today (single segment, terminal exit), to "
+        "revisit if M3 produces multiple segments. The full-sample baselines share "
+        "the same convention (the buy-and-hold identity is 'gross return net of the "
+        "single entry fee'). The engine is deliberately unchanged: a different fee "
+        "convention would move every published figure."
     )
 
 
@@ -540,7 +548,9 @@ def build_walkforward_block(computed: Computed) -> str:
                 "|---|---|---|---|---|---|---|",
                 *_fold_rows(prices, result),
                 "",
-                _oos_line(m, len(result.oos.returns)),
+                _oos_line(m, len(result.oos.returns))
+                + f" · time in market {_pct_unsigned(result.time_in_market)} "
+                f"({result.n_bars_exposed}/{len(result.oos.returns)} bars)",
                 "",
                 _overfit_note(result),
                 "",
@@ -623,6 +633,11 @@ def build_metrics_payload(computed: Computed) -> dict[str, Any]:
                 "oos": dict(result.metrics),
                 "oos_sharpe_ci95": [ci_lo, ci_hi],
                 "n_carried_boundaries": result.n_carried_boundaries,
+                "n_segments": result.n_segments,
+                "n_uncharged_exits": result.n_uncharged_exits,
+                "exit_fee_bias_bps": result.exit_fee_bias_bps,
+                "n_bars_exposed": result.n_bars_exposed,
+                "time_in_market": result.time_in_market,
                 "splice": dict(computed.splice[symbol][config_name]),
             }
 

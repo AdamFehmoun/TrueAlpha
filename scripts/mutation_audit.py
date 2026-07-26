@@ -1,4 +1,4 @@
-"""Mutation audit of the walk-forward pipeline: 10 deliberate sabotages, one at a time.
+"""Mutation audit of the walk-forward pipeline: 11 deliberate sabotages, one at a time.
 
 Each mutation is applied to the source, the full pytest suite is rerun, and the dead
 tests are counted -- TARGETED tests (everything except tests/test_metrics_golden.py)
@@ -89,6 +89,15 @@ MUTATIONS: list[tuple[str, Path, str, str]] = [
         EVAL,
         "    if not bool((np.diff(all_test) > 0).all()):",
         "    if False:",
+    ),
+    # M11 is deliberately absent: the external audit's M11 (select params on TEST
+    # instead of TRAIN) is this table's M1, present since the commit-5 campaign.
+    (
+        "M12 union calendar re-validation removed at segment level",
+        EVAL,
+        "        _assert_window_calendar(prices, window, timeframe, known_holes, segment[0], "
+        '"segment")',
+        "        pass",
     ),
 ]
 

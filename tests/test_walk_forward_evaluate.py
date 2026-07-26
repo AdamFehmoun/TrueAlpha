@@ -21,7 +21,7 @@ import pandas as pd
 import pytest
 
 from engine.backtest import BacktestConfig, run_backtest
-from engine.evaluate import walk_forward_evaluate
+from engine.evaluate import _assert_window_calendar, walk_forward_evaluate
 from engine.metrics import sharpe_ratio
 from engine.splits import LeakageError, TemporalSplit, walk_forward_splits
 from strategies import ma_crossover_signal
@@ -78,6 +78,15 @@ def _global_mean_factory(prices: pd.DataFrame, params: Mapping[str, Any]) -> pd.
     # truncation in _window_backtest keeps such a factory from reading the future.
     mean = float(prices["close"].mean())
     return (prices["close"] > mean).astype("float64").rename("signal")
+
+
+def _long_until_factory(prices: pd.DataFrame, params: Mapping[str, Any]) -> pd.Series:
+    # long strictly before a fixed timestamp, flat after -- causal (a time-only
+    # rule); lets a run have a FINITE train metric while its whole OOS region is
+    # flat, which is the case the coverage convention must handle
+    cutoff = pd.Timestamp(params["until"])
+    values = (prices.index < cutoff).astype("float64")
+    return pd.Series(values, index=prices.index, name="signal")
 
 
 # --------------------------------------------------------------------------- #
@@ -286,6 +295,66 @@ def test_hole_whitelist_mechanism_leaves_gap_free_results_bit_identical() -> Non
         assert [f.params for f in other.folds] == [f.params for f in base.folds]
 
 
+def _boundary_hole_fixture() -> tuple[pd.DataFrame, list[TemporalSplit], pd.DatetimeIndex]:
+    """A 1d frame with a 3-day calendar hole EXACTLY between two folds' test windows.
+
+    The windows stay positionally adjacent (consecutive iloc), each window is
+    internally gap-free, and a single-candidate grid makes the params identical by
+    construction -- so the splice rule wants to merge them into one segment that
+    straddles the hole."""
+    full = make_prices((100.0 * np.cumprod(1.0 + np.full(400, 0.003))).tolist())
+    dropped = pd.DatetimeIndex(full.index[320:323])
+    holey = full.drop(index=dropped)
+    fold_a = TemporalSplit(
+        train=np.arange(0, 280, dtype=np.int64),
+        test=np.arange(300, 320, dtype=np.int64),
+        purge=20,
+        embargo=0,
+    )
+    fold_b = TemporalSplit(
+        train=np.arange(0, 300, dtype=np.int64),
+        test=np.arange(320, 340, dtype=np.int64),
+        purge=20,
+        embargo=0,
+    )
+    return holey, [fold_a, fold_b], dropped
+
+
+def test_calendar_hole_at_fold_boundary_is_rejected() -> None:
+    """A calendar hole sitting exactly at a fold boundary is internal to NEITHER
+    per-fold window, so both per-fold checks pass -- but the splice rule merges the
+    two same-param adjacent folds into one segment that straddles the hole. The
+    UNION re-validation must reject it loudly (same structural class as mutation
+    M7: per-fold checks, unverified concatenation)."""
+    holey, splits, _dropped = _boundary_hole_fixture()
+    with pytest.raises(ValueError, match="segment") as excinfo:
+        walk_forward_evaluate(holey, _ma_factory, [{"fast": 5, "slow": 20}], splits, COSTS)
+    assert "calendar bar" in str(excinfo.value)
+
+
+def test_boundary_hole_fixture_passes_every_per_fold_check() -> None:
+    """ANTI-VACUITY for the union check: on the SAME fixture, every per-fold
+    positional and calendar check passes -- the hole is internal to no single
+    window. Without this assertion, the rejection test above could be green for
+    the wrong reason (a per-fold check firing instead of the union one)."""
+    holey, splits, _dropped = _boundary_hole_fixture()
+    for k, split in enumerate(splits):
+        for window_name, window in (("train", split.train), ("test", split.test)):
+            assert bool((np.diff(window) == 1).all())  # positionally contiguous
+            _assert_window_calendar(holey, window, "1d", None, k, window_name)  # must not raise
+
+
+def test_calendar_hole_at_fold_boundary_passes_when_whitelisted() -> None:
+    """The same boundary hole, pinned in the whitelist: the run must complete and
+    the two folds must actually MERGE into one segment (position held across the
+    hole, next available open marks the pre-hole bar -- nothing invented)."""
+    holey, splits, dropped = _boundary_hole_fixture()
+    result = walk_forward_evaluate(
+        holey, _ma_factory, [{"fast": 5, "slow": 20}], splits, COSTS, known_holes=dropped
+    )
+    assert result.n_segments == 1
+
+
 def test_gapped_train_window_is_rejected() -> None:
     """Same guard for the TRAIN window: a gapped train would silently misprice
     every selection candidate through the same compressed-gap marking."""
@@ -472,6 +541,49 @@ def test_non_adjacent_same_param_folds_do_not_splice() -> None:
     pd.testing.assert_series_equal(
         result.folds[1].test_result.returns, standalone.returns, check_exact=True
     )
+
+
+def test_time_in_market_is_engine_counted_and_bounded() -> None:
+    """Coverage is a first-class, engine-counted output (single source, like
+    n_carried_boundaries): cross-checked against the OOS positions themselves."""
+    prices = random_walk_prices(400, seed=21)
+    splits = walk_forward_splits(400, n_folds=4, test_size=0.3, purge=60, embargo=2)
+    result = walk_forward_evaluate(prices, _ma_factory, [{"fast": 5, "slow": 20}], splits, COSTS)
+    assert result.n_bars_exposed == int((result.oos.positions != 0.0).sum())
+    assert 0.0 <= result.time_in_market <= 1.0
+    assert result.time_in_market == result.n_bars_exposed / len(result.oos.returns)
+
+
+def test_fully_flat_oos_run_has_zero_coverage_undefined_sharpe_and_zero_bias() -> None:
+    """A run whose whole OOS region is flat (finite TRAIN metric, so selection
+    works): time_in_market == 0.0, the Sharpe is undefined (non-finite), and the
+    exit-fee bias is exactly 0.0 -- a flat outgoing position has nothing to
+    re-bill."""
+    prices = random_walk_prices(300, seed=3)
+    splits = walk_forward_splits(300, n_folds=1, test_size=0.2, purge=5, embargo=0)
+    until = prices.index[200]  # long through most of train, flat over the whole test
+    result = walk_forward_evaluate(prices, _long_until_factory, [{"until": until}], splits, COSTS)
+    assert result.n_bars_exposed == 0
+    assert result.time_in_market == 0.0
+    assert not math.isfinite(result.metrics["sharpe"])
+    assert result.n_uncharged_exits == 0
+    assert result.exit_fee_bias_bps == 0.0
+
+
+def test_exit_fee_bias_matches_closed_form_for_single_segment_terminal_exit() -> None:
+    """Single segment, non-zero terminal position: the exact re-billed bias equals
+    `(1 + total_return) × cost_rate` -- the fee applied to FINAL equity, not the
+    naive `cost_rate` itself: equity has already moved when the exit occurs.
+    Derivation: only the last bar's factor changes, (1 + r_last)(1 - c|p|), so the
+    compounded difference is P - P(1 - c|p|) = P·c·|p| with |p| = 1."""
+    prices = make_prices((100.0 * np.cumprod(1.0 + np.full(400, 0.003))).tolist())
+    splits = walk_forward_splits(400, n_folds=4, test_size=0.3, purge=30, embargo=2)
+    result = walk_forward_evaluate(prices, _ma_factory, [{"fast": 5, "slow": 20}], splits, COSTS)
+    assert result.n_segments == 1
+    assert float(result.oos.positions.iloc[-1]) != 0.0  # terminal exit exists
+    assert result.n_uncharged_exits == 1
+    closed_form = (1.0 + result.metrics["total_return"]) * COSTS.cost_rate * 1e4
+    assert result.exit_fee_bias_bps == pytest.approx(closed_form, abs=1e-9)
 
 
 def test_n_carried_boundaries_is_counted_by_the_engine() -> None:

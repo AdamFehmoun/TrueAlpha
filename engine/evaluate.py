@@ -89,6 +89,18 @@ class WalkForwardResult:
     # splicing was introduced, so it is pinned here, published, and tested --
     # never inferred by hand.
     n_carried_boundaries: int
+    # temporal coverage of the OOS series, engine-counted (single source, like
+    # n_carried_boundaries): the published Sharpe includes flat bars as zero
+    # returns, so the reader needs these to recompute the exposed-only variant
+    n_bars_exposed: int  # OOS bars held with a non-zero position
+    time_in_market: float  # n_bars_exposed / len(oos.returns)
+    # segment accounting for the unbilled-exit bias, engine-counted:
+    n_segments: int
+    n_uncharged_exits: int  # segments whose outgoing position is non-zero
+    # EXACT effect on total_return of the unbilled exits, computed by re-billing
+    # the missing liquidation at the last bar of each concerned segment (exact in
+    # amount; one bar early in timing versus a continuous book)
+    exit_fee_bias_bps: float
 
 
 def _window_backtest(
@@ -257,6 +269,18 @@ def walk_forward_evaluate(
     n_carried = 0
     for segment in segments:
         window = np.concatenate([np.asarray(splits[k].test) for k in segment])
+        # the splice rule only ever joins contiguous windows: VERIFY it instead of
+        # assuming it (belt-and-braces; must stay green)
+        if not bool((np.diff(window) == 1).all()):
+            raise ValueError(
+                f"segment {segment}: concatenated window is not contiguous; "
+                "the splice rule must never join non-adjacent test windows"
+            )
+        # re-validate the calendar of the UNION: a hole sitting exactly at a fold
+        # boundary is internal to neither per-fold window (both per-fold checks
+        # pass) but IS internal to the spliced window -- same structural class as
+        # mutation M7: per-fold checks, unverified concatenation
+        _assert_window_calendar(prices, window, timeframe, known_holes, segment[0], "segment")
         seg_result = _window_backtest(prices, strategy_factory, picks[segment[0]][0], window, cfg)
         offset = 0
         for k in segment:
@@ -288,6 +312,26 @@ def walk_forward_evaluate(
     positions = pd.concat([f.test_result.positions for f in folds])
     turnover = pd.concat([f.test_result.turnover for f in folds])
     equity = (1.0 + returns).cumprod()
+
+    # temporal coverage (single source: consumers must not re-count)
+    n_bars_exposed = int((positions.to_numpy(dtype="float64") != 0.0).sum())
+
+    # EXACT unbilled-exit bias: re-bill the missing liquidation at the last bar of
+    # each segment whose outgoing position is non-zero, recompound, and take the
+    # difference of the totals. Exact in amount; one bar early in timing versus a
+    # continuous book, which would bill it at the next segment's first bar.
+    extra = pd.Series(0.0, index=positions.index)
+    n_uncharged = 0
+    offset = 0
+    for segment in segments:
+        n_seg = sum(len(splits[k].test) for k in segment)
+        outgoing = float(positions.iloc[offset + n_seg - 1])
+        if outgoing != 0.0:
+            n_uncharged += 1
+            extra.iloc[offset + n_seg - 1] += abs(outgoing)
+        offset += n_seg
+    net_liq = (1.0 + returns) * (1.0 - extra * cfg.cost_rate) - 1.0
+    exit_fee_bias_bps = (float((1.0 + returns).prod()) - float((1.0 + net_liq).prod())) * 1e4
     oos = BacktestResult(
         equity=equity.rename("equity"),
         returns=returns.rename("returns"),
@@ -301,4 +345,9 @@ def walk_forward_evaluate(
         selection_metric=selection_metric,
         timeframe=timeframe,
         n_carried_boundaries=n_carried,
+        n_bars_exposed=n_bars_exposed,
+        time_in_market=n_bars_exposed / len(returns),
+        n_segments=len(segments),
+        n_uncharged_exits=n_uncharged,
+        exit_fee_bias_bps=exit_fee_bias_bps,
     )

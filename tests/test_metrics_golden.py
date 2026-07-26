@@ -139,6 +139,40 @@ def test_anchored_and_rolling_oos_are_bit_identical_while_selection_is_degenerat
             assert repr(sharpe_a) == repr(sharpe_r)
 
 
+def test_coverage_convention_numbers_match_the_computed_run(computed: Computed) -> None:
+    """The locked 2026-07-27 coverage-convention prose quotes data-derived numbers
+    (all-bars vs exposed-only Sharpe and t-stat, exposed bar counts, magnitude
+    ratio); every one is recomputed here from the shared run -- exposed-only
+    Sharpe = mean/std(ddof=1) over the non-flat bars, annualized sqrt(365);
+    exposed t-stat = the repo's bar-count convention applied to the exposed bar
+    count -- and must appear in the README verbatim."""
+    readme = README_PATH.read_bytes().decode("utf-8").replace("−", "-")
+    values: dict[str, tuple[float, float, float, float, int]] = {}
+    for symbol, by_config in computed.walkforward.items():
+        result = by_config["anchored"]
+        r = result.oos.returns.to_numpy(dtype="float64")
+        p = result.oos.positions.to_numpy(dtype="float64")
+        exposed = r[p != 0.0]
+        sr_exp = float(exposed.mean() / exposed.std(ddof=1)) * math.sqrt(365.0)
+        t_exp = sr_exp * math.sqrt(len(exposed) / calendar_bars_per_year(RESULTS_TIMEFRAME))
+        assert len(exposed) == result.n_bars_exposed  # engine count == direct count
+        values[symbol.split("/")[0]] = (
+            result.metrics["sharpe"],
+            sr_exp,
+            result.metrics["t_stat"],
+            t_exp,
+            result.n_bars_exposed,
+        )
+    eth, btc = values["ETH"], values["BTC"]
+    assert f"Sharpe {eth[0]:.4f} on all 219 bars" in readme
+    assert f"**{eth[1]:.4f}** on" in readme
+    assert f"its {eth[4]} exposed bars" in readme
+    magnitude = (abs(eth[1] / eth[0]) - 1.0) * 100.0
+    assert f"({magnitude:.0f}% larger in magnitude)" in readme
+    assert f"({eth[2]:.3f} → {eth[3]:.3f})" in readme
+    assert f"BTC: {btc[0]:.4f} → {btc[1]:.4f}, t {btc[2]:.3f} → {btc[3]:.3f}" in readme
+
+
 def test_carried_boundaries_are_exactly_one_per_symbol_and_config(computed: Computed) -> None:
     """A3 pin: on the published 1d runs, exactly ONE fold boundary carries a
     position (fold 4 -> fold 5, 2024-11-17 -> 2024-11-18) for each symbol, in BOTH

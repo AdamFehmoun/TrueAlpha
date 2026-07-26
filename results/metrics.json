@@ -170,6 +170,7 @@
     "BTC/USDT": {
       "anchored": {
         "anchored": true,
+        "exit_fee_bias_bps": 8.655554823784328,
         "folds": [
           {
             "fold": 1,
@@ -252,7 +253,10 @@
             "train_start": "2022-01-01T00:00:00+00:00"
           }
         ],
+        "n_bars_exposed": 145,
         "n_carried_boundaries": 1,
+        "n_segments": 1,
+        "n_uncharged_exits": 1,
         "oos": {
           "annualized_turnover": 11.666666666666666,
           "cagr": -0.2138751602725334,
@@ -278,10 +282,12 @@
           "standalone_sharpe": -0.46597068762682486,
           "standalone_sharpe_se": 1.291186428929037,
           "standalone_total_return": -0.141122332609251
-        }
+        },
+        "time_in_market": 0.6621004566210046
       },
       "rolling": {
         "anchored": false,
+        "exit_fee_bias_bps": 8.655554823784328,
         "folds": [
           {
             "fold": 1,
@@ -364,7 +370,10 @@
             "train_start": "2022-06-25T00:00:00+00:00"
           }
         ],
+        "n_bars_exposed": 145,
         "n_carried_boundaries": 1,
+        "n_segments": 1,
+        "n_uncharged_exits": 1,
         "oos": {
           "annualized_turnover": 11.666666666666666,
           "cagr": -0.2138751602725334,
@@ -390,12 +399,14 @@
           "standalone_sharpe": -0.46597068762682486,
           "standalone_sharpe_se": 1.291186428929037,
           "standalone_total_return": -0.141122332609251
-        }
+        },
+        "time_in_market": 0.6621004566210046
       }
     },
     "ETH/USDT": {
       "anchored": {
         "anchored": true,
+        "exit_fee_bias_bps": 7.234179194753887,
         "folds": [
           {
             "fold": 1,
@@ -478,7 +489,10 @@
             "train_start": "2022-01-01T00:00:00+00:00"
           }
         ],
+        "n_bars_exposed": 111,
         "n_carried_boundaries": 1,
+        "n_segments": 1,
+        "n_uncharged_exits": 1,
         "oos": {
           "annualized_turnover": 8.333333333333334,
           "cagr": -0.41702655796660204,
@@ -504,10 +518,12 @@
           "standalone_sharpe": -1.2821908296226745,
           "standalone_sharpe_se": 1.2924473380928552,
           "standalone_total_return": -0.30700126042813813
-        }
+        },
+        "time_in_market": 0.5068493150684932
       },
       "rolling": {
         "anchored": false,
+        "exit_fee_bias_bps": 7.234179194753887,
         "folds": [
           {
             "fold": 1,
@@ -590,7 +606,10 @@
             "train_start": "2022-06-25T00:00:00+00:00"
           }
         ],
+        "n_bars_exposed": 111,
         "n_carried_boundaries": 1,
+        "n_segments": 1,
+        "n_uncharged_exits": 1,
         "oos": {
           "annualized_turnover": 8.333333333333334,
           "cagr": -0.41702655796660204,
@@ -616,7 +635,8 @@
           "standalone_sharpe": -1.2821908296226745,
           "standalone_sharpe_se": 1.2924473380928552,
           "standalone_total_return": -0.30700126042813813
-        }
+        },
+        "time_in_market": 0.5068493150684932
       }
     }
   }
