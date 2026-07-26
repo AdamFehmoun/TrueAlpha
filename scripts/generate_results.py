@@ -407,6 +407,72 @@ def _selection_note(walkforward: Mapping[str, Mapping[str, WalkForwardResult]]) 
     )
 
 
+def _config_identity_note(walkforward: Mapping[str, Mapping[str, WalkForwardResult]]) -> str:
+    """Say plainly WHY anchored and rolling agree, when they do: degeneracy."""
+    identical = all(
+        by_config["anchored"].oos.returns.equals(by_config["rolling"].oos.returns)
+        for by_config in walkforward.values()
+    )
+    if identical:
+        return (
+            "**Anchored ≡ rolling is a degeneracy, not a robustness result:** for both "
+            "symbols the anchored and rolling OOS blocks below are bit-identical — same "
+            "Sharpe, t-stat, total return, max drawdown, turnover, and the same five "
+            "per-fold test Sharpes; only the train Sharpes differ — BECAUSE the "
+            "selection is degenerate: 5/200 wins all 20 fold records, so both protocols "
+            "build the same segments and therefore the same equity curve. This is NOT "
+            "evidence of robustness to the protocol choice. The equality is pinned by "
+            "`test_anchored_and_rolling_oos_are_bit_identical_while_selection_is_degenerate`: "
+            "the day it breaks, the selection has stopped being degenerate, and that "
+            "must be seen, not hidden."
+        )
+    return (
+        "**Anchored vs rolling:** the two configurations produce DIFFERENT OOS series "
+        "on this run — the selection is no longer degenerate across them; the "
+        "degeneracy admission that used to sit here no longer applies."
+    )
+
+
+def _unbilled_exits(result: WalkForwardResult) -> tuple[int, int, float]:
+    """(param-change exits, terminal exits, |final position|) never billed a fee.
+
+    A segment end whose outgoing position is non-zero is an exit the engine never
+    charges (turnover is |delta position| WITHIN a run; no terminal liquidation).
+    """
+    param_change_exits = 0
+    for k in range(1, len(result.folds)):
+        if (
+            result.folds[k].params != result.folds[k - 1].params
+            and float(result.folds[k - 1].test_result.positions.iloc[-1]) != 0.0
+        ):
+            param_change_exits += 1
+    final_position = float(result.oos.positions.iloc[-1])
+    terminal_exits = 1 if final_position != 0.0 else 0
+    return param_change_exits, terminal_exits, abs(final_position)
+
+
+def _exit_fee_note(result: WalkForwardResult) -> str:
+    """B-known bias, stated with its exact formula and engine-counted occurrences."""
+    param_exits, terminal_exits, final_abs = _unbilled_exits(result)
+    total = param_exits + terminal_exits
+    per_exit_bps = (CONFIG.fee_bps + CONFIG.slippage_bps) * final_abs
+    return (
+        "**Known bias — unbilled exit fees (optimistic and one-directional):** the "
+        "engine's turnover is `|Δposition|` within a run "
+        "(`positions.diff().abs().fillna(positions.abs())`) and no terminal "
+        "liquidation is ever charged, so at every segment end whose outgoing "
+        "position `p` is non-zero, `cost_rate × |p|` = "
+        f"`(fee_bps + slippage_bps)/10⁴ × |p|` — exactly "
+        f"{CONFIG.fee_bps + CONFIG.slippage_bps:.0f} bp at the published costs with "
+        f"`p = 1.0` — goes unbilled. This run: **{total} unbilled exit(s)** "
+        f"({param_exits} at parameter-change boundaries, {terminal_exits} at the OOS "
+        f"end, final position {final_abs:.1f}, ≈ {per_exit_bps:.0f} bp unbilled). The "
+        "full-sample baselines share the same convention (the buy-and-hold identity "
+        "is 'gross return net of the single entry fee'). The engine is deliberately "
+        "unchanged: a different fee convention would move every published figure."
+    )
+
+
 def _splice_note(stats: Mapping[str, Any]) -> str:
     return (
         f"**Fold splicing (`n_carried_boundaries`, counted by the engine):** "
@@ -456,6 +522,8 @@ def build_walkforward_block(computed: Computed) -> str:
         _power_note(oos_bars),
         "",
         _selection_note(computed.walkforward),
+        "",
+        _config_identity_note(computed.walkforward),
     ]
     prereg_notes: list[str] = []
     for symbol in SYMBOLS:
@@ -477,6 +545,8 @@ def build_walkforward_block(computed: Computed) -> str:
                 _overfit_note(result),
                 "",
                 _splice_note(computed.splice[symbol][config_name]),
+                "",
+                _exit_fee_note(result),
             ]
             if config_name == "anchored":
                 prereg_notes.append(_prereg_note(symbol, m))
@@ -491,22 +561,23 @@ def build_walkforward_block(computed: Computed) -> str:
 
 
 def _json_ready(obj: Any) -> Any:
-    """Make ``obj`` serializable as STRICT JSON without losing information.
+    """Make ``obj`` serializable as STRICT JSON.
 
-    Strict JSON has no NaN/Infinity tokens, so non-finite floats become the explicit
-    strings "NaN" / "Infinity" / "-Infinity" (a deliberate, lossless convention --
-    ``allow_nan=False`` below guarantees no bare token can slip through). Finite
-    floats are left untouched: ``json.dumps`` serializes them via ``repr``, the
-    shortest representation that round-trips bit-for-bit.
+    A non-finite float means the metric is UNDEFINED (e.g. a fold whose strategy is
+    flat over its whole test window has no Sharpe) and is serialized as ``null`` --
+    the only strict-JSON representation. String tokens like "NaN" are non-standard
+    JSON: ``json.load`` tolerates them but jq and most JS/Go/Rust parsers refuse
+    them, which defeats the point of a golden file. ``allow_nan=False`` below
+    guarantees no bare NaN/Infinity token can slip through either. Finite floats
+    are left untouched: ``json.dumps`` serializes them via ``repr``, the shortest
+    representation that round-trips bit-for-bit.
     """
     if isinstance(obj, dict):
         return {key: _json_ready(value) for key, value in obj.items()}
     if isinstance(obj, list | tuple):
         return [_json_ready(value) for value in obj]
     if isinstance(obj, float) and not math.isfinite(obj):
-        if math.isnan(obj):
-            return "NaN"
-        return "Infinity" if obj > 0 else "-Infinity"
+        return None
     return obj
 
 

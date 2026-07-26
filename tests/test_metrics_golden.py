@@ -64,11 +64,14 @@ def test_golden_metrics_match_committed_file_exactly(regenerated: str) -> None:
     )
 
 
-def test_golden_metrics_is_strict_json_with_explicit_nonfinite() -> None:
-    """The committed file must parse as STRICT JSON: no bare NaN/Infinity tokens.
+def test_golden_metrics_is_strict_json_with_null_for_undefined() -> None:
+    """The committed file must parse as STRICT JSON: no NaN/Infinity token OR string.
 
-    Non-finite values are stored as the explicit strings "NaN"/"Infinity"/"-Infinity"
-    (see ``scripts.generate_results._json_ready``), so a strict parse must succeed.
+    An undefined metric (a fold entirely flat over its test window has no Sharpe)
+    is serialized as ``null`` -- the only strict-JSON representation; "NaN" strings
+    are non-standard and break jq and most non-Python parsers. The strict parse is
+    enforced with a ``parse_constant`` that fails on any bare token, and the four
+    known undefined values (ETH/USDT fold 3, both configurations) must be null.
     """
 
     def _reject(token: str) -> None:
@@ -76,6 +79,11 @@ def test_golden_metrics_is_strict_json_with_explicit_nonfinite() -> None:
 
     payload = json.loads(METRICS_PATH.read_bytes().decode("utf-8"), parse_constant=_reject)
     assert set(payload) == {"config", "data", "full_sample", "walk_forward"}
+    for config_name in ("anchored", "rolling"):
+        fold3 = payload["walk_forward"]["ETH/USDT"][config_name]["folds"][2]
+        assert fold3["test_sharpe"] is None  # flat fold => Sharpe undefined => null
+        assert fold3["test_t_stat"] is None
+    assert '"NaN"' not in METRICS_PATH.read_bytes().decode("utf-8")
 
 
 def test_golden_metrics_pins_all_data_hashes() -> None:
@@ -100,6 +108,35 @@ def test_prereg_constants_match_the_dated_readme_prose() -> None:
     assert f"[{PREREG_SHARPE_LO:+.1f}, {PREREG_SHARPE_HI:+.1f}]" in readme
     assert f"|t-stat| < {PREREG_TSTAT_MAX:.0f}" in readme
     assert f"OOS Sharpe > {PREREG_ALARM_SHARPE:.1f}" in readme
+
+
+def test_anchored_and_rolling_oos_are_bit_identical_while_selection_is_degenerate(
+    computed: Computed,
+) -> None:
+    """The degeneracy witness: anchored and rolling produce bit-identical OOS
+    blocks (returns, positions, every metric, every per-fold test Sharpe) BECAUSE
+    5/200 wins every fold record, so both protocols build the same segments and the
+    same equity curve. This is NOT robustness to the protocol choice, and the
+    README says so next to the tables. The day this test breaks, the selection has
+    stopped being degenerate -- that is a result to be seen, not a failure to be
+    silenced."""
+    import pandas as pd
+
+    from engine.metrics import sharpe_ratio
+
+    for _symbol, by_config in computed.walkforward.items():
+        anchored, rolling = by_config["anchored"], by_config["rolling"]
+        pd.testing.assert_series_equal(anchored.oos.returns, rolling.oos.returns, check_exact=True)
+        pd.testing.assert_series_equal(
+            anchored.oos.positions, rolling.oos.positions, check_exact=True
+        )
+        # repr-compare: bit-level equality that also treats NaN == NaN (ETH fold 3)
+        assert repr(sorted(anchored.metrics.items())) == repr(sorted(rolling.metrics.items()))
+        for fold_a, fold_r in zip(anchored.folds, rolling.folds, strict=True):
+            assert fold_a.params == fold_r.params
+            sharpe_a = sharpe_ratio(fold_a.test_result.returns, anchored.timeframe)
+            sharpe_r = sharpe_ratio(fold_r.test_result.returns, rolling.timeframe)
+            assert repr(sharpe_a) == repr(sharpe_r)
 
 
 def test_carried_boundaries_are_exactly_one_per_symbol_and_config(computed: Computed) -> None:

@@ -72,6 +72,14 @@ def _flat_or_long_factory(prices: pd.DataFrame, params: Mapping[str, Any]) -> pd
     return pd.Series(value, index=prices.index, name="signal")
 
 
+def _global_mean_factory(prices: pd.DataFrame, params: Mapping[str, Any]) -> pd.Series:
+    # deliberately NON-causal: signal[t] compares close[t] to the mean of the ENTIRE
+    # history it is handed -- the classic global-normalizer leak. Only the history
+    # truncation in _window_backtest keeps such a factory from reading the future.
+    mean = float(prices["close"].mean())
+    return (prices["close"] > mean).astype("float64").rename("signal")
+
+
 # --------------------------------------------------------------------------- #
 # the two invariants
 # --------------------------------------------------------------------------- #
@@ -196,6 +204,26 @@ def test_gapped_test_window_is_rejected() -> None:
     )
     with pytest.raises(ValueError, match="not contiguous"):
         walk_forward_evaluate(prices, _ma_factory, GRID, [bad], COSTS)
+
+
+def test_history_truncation_hides_bars_beyond_the_window_even_from_a_non_causal_factory() -> None:
+    """The history handed to the factory is truncated at each window's end; bars
+    beyond it must be invisible EVEN to a non-causal strategy (the selection
+    contract promises exactly that). With a global-mean factory -- whose signal at
+    every bar depends on the whole history it receives -- perturbing bars strictly
+    AFTER the last test window must change nothing, bit-for-bit: selection scores,
+    parameters, and OOS returns. Kills mutation M8 (``history = prices``,
+    untruncated), which survived the suite before this test existed."""
+    prices = random_walk_prices(400, seed=17)
+    splits = walk_forward_splits(350, n_folds=2, test_size=0.3, purge=20, embargo=0)
+    base = walk_forward_evaluate(prices, _global_mean_factory, [{}], splits, COSTS)
+    tampered = prices.copy()
+    tampered.iloc[350:] = tampered.iloc[350:] * 100.0  # strictly beyond every window
+    result = walk_forward_evaluate(tampered, _global_mean_factory, [{}], splits, COSTS)
+    for j in range(len(splits)):
+        assert result.folds[j].train_metric == base.folds[j].train_metric
+        assert result.folds[j].params == base.folds[j].params
+    pd.testing.assert_series_equal(result.oos.returns, base.oos.returns, check_exact=True)
 
 
 def test_unknown_calendar_hole_is_rejected_loudly_and_listed() -> None:
