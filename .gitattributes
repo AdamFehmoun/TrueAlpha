@@ -1,0 +1,10 @@
+# The golden guarantees (README numbers, results/metrics.json byte-for-byte) depend
+# on stable line endings: everything text is LF everywhere, parquet is binary.
+* text=auto
+*.py text eol=lf
+*.md text eol=lf
+*.json text eol=lf
+*.txt text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.parquet binary

@@ -1,27 +1,62 @@
 {
   "datasets": {
     "BTC/USDT": {
-      "file": "BTC_USDT_1d.parquet",
-      "first_timestamp": "2022-01-01T00:00:00+00:00",
-      "last_timestamp": "2024-12-31T00:00:00+00:00",
-      "rows": 1096,
-      "sha256": "38fe5b62da40fbd64d2e57d9646d1da274772a709d5def896065ec6156a749a1"
+      "1d": {
+        "file": "BTC_USDT_1d.parquet",
+        "first_timestamp": "2022-01-01T00:00:00+00:00",
+        "last_timestamp": "2024-12-31T00:00:00+00:00",
+        "missing_bars": [],
+        "rows": 1096,
+        "sha256": "38fe5b62da40fbd64d2e57d9646d1da274772a709d5def896065ec6156a749a1"
+      },
+      "1h": {
+        "file": "BTC_USDT_1h.parquet",
+        "first_timestamp": "2022-01-01T00:00:00+00:00",
+        "last_timestamp": "2024-12-31T23:00:00+00:00",
+        "missing_bars": [
+          "2023-03-24T13:00:00+00:00"
+        ],
+        "rows": 26303,
+        "sha256": "04ab9c023608003c63b55d33a4d5223b9137f06db8f2742bfc56092f0a6c2a9e"
+      }
     },
     "ETH/USDT": {
-      "file": "ETH_USDT_1d.parquet",
-      "first_timestamp": "2022-01-01T00:00:00+00:00",
-      "last_timestamp": "2024-12-31T00:00:00+00:00",
-      "rows": 1096,
-      "sha256": "95736c02eec8ff946b7f5ad132c6355cbab684ed110d15ac7c681026bea5c1fd"
+      "1d": {
+        "file": "ETH_USDT_1d.parquet",
+        "first_timestamp": "2022-01-01T00:00:00+00:00",
+        "last_timestamp": "2024-12-31T00:00:00+00:00",
+        "missing_bars": [],
+        "rows": 1096,
+        "sha256": "95736c02eec8ff946b7f5ad132c6355cbab684ed110d15ac7c681026bea5c1fd"
+      },
+      "1h": {
+        "file": "ETH_USDT_1h.parquet",
+        "first_timestamp": "2022-01-01T00:00:00+00:00",
+        "last_timestamp": "2024-12-31T23:00:00+00:00",
+        "missing_bars": [
+          "2023-03-24T13:00:00+00:00"
+        ],
+        "rows": 26303,
+        "sha256": "660394aebcb8b7870844172ab4905003e0aee1e788ad64ec2d4a0e5a20d59e73"
+      }
     }
   },
-  "downloaded_at": "2026-07-17T13:39:12+00:00",
-  "end": "2024-12-31T00:00:00Z",
+  "downloaded_at": {
+    "1d": "2026-07-17T13:39:12+00:00",
+    "1h": "2026-07-25T18:41:43+00:00"
+  },
+  "end": {
+    "1d": "2024-12-31T00:00:00Z",
+    "1h": "2024-12-31T23:00:00Z"
+  },
   "source": {
     "exchange": "binance",
     "pandas": "2.3.3",
     "via": "ccxt 4.5.66"
   },
   "start": "2022-01-01T00:00:00Z",
-  "timeframe": "1d"
+  "timeframes": [
+    "1d",
+    "1h"
+  ]
 }
