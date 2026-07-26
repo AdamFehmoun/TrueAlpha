@@ -33,6 +33,7 @@ from engine.metrics import (
     bars_per_year,
     calendar_bars_per_year,
     sharpe_ratio,
+    sharpe_standard_error,
     sharpe_tstat,
     summarize,
 )
@@ -72,6 +73,14 @@ WF_GRID: list[dict[str, Any]] = [
     for slow in (20, 50, 100, 200)
     if fast < slow
 ]
+# both walk-forward configurations are published: anchored is the pre-registered
+# protocol; rolling exercises the fixed-length-train path on real data and is the
+# configuration where the selection has a chance to move (early regimes slide out
+# of the train instead of being diluted forever)
+WF_CONFIG_LABELS: Final[tuple[tuple[str, bool, str], ...]] = (
+    ("anchored", True, "expanding train — the pre-registered protocol"),
+    ("rolling", False, "fixed-length sliding train"),
+)
 
 # --- pre-registered expectations (see the README's dated pre-registration) ----- #
 PREREG_SHARPE_LO = -0.3
@@ -87,7 +96,48 @@ class Computed:
     manifest: dict[str, Any]
     prices: dict[str, pd.DataFrame]  # 1d, hash- and calendar-verified loads
     baseline_rows: list[dict[str, Any]]
-    walkforward: dict[str, WalkForwardResult]
+    walkforward: dict[str, dict[str, WalkForwardResult]]  # symbol -> config -> result
+    splice: dict[str, dict[str, dict[str, Any]]]  # symbol -> config -> splice stats
+
+
+def _splice_stats(prices: pd.DataFrame, result: WalkForwardResult) -> dict[str, Any]:
+    """Quantify the artifact the splice rule removes, by running the alternative.
+
+    Re-runs every fold STANDALONE (forced flat restart -- the pre-splice
+    convention) and reports what that convention would have cost on this run:
+    how many same-parameter boundaries actually carried a position, and the OOS
+    total-return delta in bps (phantom re-entry fees + forced-flat first bars).
+    """
+    standalone_returns: list[pd.Series] = []
+    for f in result.folds:
+        window = f.split.test
+        history = prices.iloc[: int(window[-1]) + 1]
+        signal = _ma_factory(history, f.params)
+        standalone_returns.append(
+            run_backtest(prices.iloc[window], signal.iloc[window], CONFIG).returns
+        )
+    standalone_series = pd.concat(standalone_returns)
+    standalone_total = float((1.0 + standalone_series).prod() - 1.0)
+    spliced_total = float(result.metrics["total_return"])
+
+    boundaries = 0
+    carried = 0
+    for k in range(1, len(result.folds)):
+        prev, cur = result.folds[k - 1], result.folds[k]
+        contiguous = int(cur.split.test[0]) == int(prev.split.test[-1]) + 1
+        if contiguous and cur.params == prev.params:
+            boundaries += 1
+            if float(cur.test_result.positions.iloc[0]) != 0.0:
+                carried += 1
+    return {
+        "same_param_boundaries": boundaries,
+        "carried_positions": carried,
+        "spliced_total_return": spliced_total,
+        "standalone_total_return": standalone_total,
+        "standalone_sharpe": sharpe_ratio(standalone_series, RESULTS_TIMEFRAME),
+        "standalone_sharpe_se": sharpe_standard_error(standalone_series, RESULTS_TIMEFRAME),
+        "splice_delta_bps": (spliced_total - standalone_total) * 1e4,
+    }
 
 
 def compute_all() -> Computed:
@@ -101,21 +151,38 @@ def compute_all() -> Computed:
             metrics = summarize(result, RESULTS_TIMEFRAME)
             rows.append({"symbol": symbol, "name": name, **metrics})
 
-    walkforward: dict[str, WalkForwardResult] = {}
+    walkforward: dict[str, dict[str, WalkForwardResult]] = {}
+    splice_stats: dict[str, dict[str, dict[str, Any]]] = {}
     for symbol in SYMBOLS:
-        splits = walk_forward_splits(
-            len(prices[symbol]), WF_N_FOLDS, WF_TEST_SIZE, WF_PURGE, WF_EMBARGO, anchored=True
-        )
-        walkforward[symbol] = walk_forward_evaluate(
-            prices[symbol],
-            _ma_factory,
-            WF_GRID,
-            splits,
-            CONFIG,
-            WF_SELECTION_METRIC,
-            RESULTS_TIMEFRAME,
-        )
-    return Computed(manifest=manifest, prices=prices, baseline_rows=rows, walkforward=walkforward)
+        walkforward[symbol] = {}
+        splice_stats[symbol] = {}
+        for config_name, anchored, _desc in WF_CONFIG_LABELS:
+            splits = walk_forward_splits(
+                len(prices[symbol]),
+                WF_N_FOLDS,
+                WF_TEST_SIZE,
+                WF_PURGE,
+                WF_EMBARGO,
+                anchored=anchored,
+            )
+            wf_result = walk_forward_evaluate(
+                prices[symbol],
+                _ma_factory,
+                WF_GRID,
+                splits,
+                CONFIG,
+                WF_SELECTION_METRIC,
+                RESULTS_TIMEFRAME,
+            )
+            walkforward[symbol][config_name] = wf_result
+            splice_stats[symbol][config_name] = _splice_stats(prices[symbol], wf_result)
+    return Computed(
+        manifest=manifest,
+        prices=prices,
+        baseline_rows=rows,
+        walkforward=walkforward,
+        splice=splice_stats,
+    )
 
 
 def _pct(x: float) -> str:
@@ -226,7 +293,7 @@ def _fold_rows(prices: pd.DataFrame, result: WalkForwardResult) -> list[str]:
 def _overfit_note(result: WalkForwardResult) -> str:
     gaps: list[float] = []
     below = 0
-    unmeasurable = 0
+    unmeasurable_folds: list[int] = []
     for f in result.folds:
         test_sharpe = sharpe_ratio(f.test_result.returns, result.timeframe)
         if math.isfinite(test_sharpe):
@@ -234,25 +301,26 @@ def _overfit_note(result: WalkForwardResult) -> str:
             if test_sharpe < f.train_metric:
                 below += 1
         else:
-            unmeasurable += 1
+            unmeasurable_folds.append(f.fold + 1)
     if not gaps:
         return "**Overfit gap (train − test Sharpe):** not computable (no finite test Sharpe)."
     mean_gap = sum(gaps) / len(gaps)
-    note = (
-        f"**Overfit gap (train − test Sharpe):** mean {mean_gap:+.2f} · test Sharpe below "
-        f"train Sharpe on {below}/{len(result.folds)} folds — the gap is the overfit "
-        "measure, displayed on purpose."
-    )
-    if unmeasurable > 0:
-        # a NaN test Sharpe (strategy flat over its whole test window) is neither
-        # below nor above train: say so instead of letting the x/K ratio imply it won
-        plural = "s" if unmeasurable > 1 else ""
-        note += (
-            f" ({unmeasurable} fold{plural} with no measurable test Sharpe — strategy "
-            "flat over the test window — excluded from the mean and not counted as "
-            "below.)"
+    # the honest denominator is the number of MEASURABLE folds: counting an
+    # unmeasurable fold in the ratio would understate the regularity of the result
+    if unmeasurable_folds:
+        listed = ", ".join(str(k) for k in unmeasurable_folds)
+        plural = "s" if len(unmeasurable_folds) > 1 else ""
+        ratio = (
+            f"test Sharpe below train Sharpe on {below} of the {len(gaps)} measurable folds "
+            f"(fold{plural} {listed} not measurable: strategy flat over the whole test "
+            "window, excluded from the mean)"
         )
-    return note
+    else:
+        ratio = f"test Sharpe below train Sharpe on {below}/{len(result.folds)} folds"
+    return (
+        f"**Overfit gap (train − test Sharpe):** mean {mean_gap:+.2f} · {ratio} — "
+        "the gap is the overfit measure, displayed on purpose."
+    )
 
 
 def _prereg_note(symbol: str, metrics: Mapping[str, float]) -> str:
@@ -273,51 +341,141 @@ def _prereg_note(symbol: str, metrics: Mapping[str, float]) -> str:
     return note
 
 
+def _ci95(m: Mapping[str, float]) -> tuple[float, float]:
+    return (m["sharpe"] - 1.96 * m["sharpe_se"], m["sharpe"] + 1.96 * m["sharpe_se"])
+
+
+def _oos_line(m: Mapping[str, float], n_bars: int) -> str:
+    lo, hi = _ci95(m)
+    return (
+        f"**OOS, {n_bars} concatenated test bars:** "
+        f"Sharpe {_num(m['sharpe'])} ± {_num(m['sharpe_se'])} (SE), "
+        f"CI95 [{_num(lo)}, {_num(hi)}] · t-stat {_num(m['t_stat'])} · "
+        f"total return {_pct(m['total_return'])} · "
+        f"max drawdown {_pct(m['max_drawdown'])} · "
+        f"ann. turnover {m['annualized_turnover']:.1f} · Sortino {_num(m['sortino'])} · "
+        f"win rate {_pct_unsigned(m['win_rate'])} (non-flat bars only) · "
+        f"flat bars {_pct_unsigned(m['flat_share'])}"
+    )
+
+
+def _power_note(oos_bars: int) -> str:
+    """B3: both numbers are computed here, never hand-written."""
+    years = oos_bars / calendar_bars_per_year(RESULTS_TIMEFRAME)
+    minimum_detectable_sharpe = 2.0 / math.sqrt(years)
+    return (
+        f"**Statistical power (computed, not hand-written):** on an OOS span of "
+        f"{years:.3f} years, the smallest Sharpe detectable at |t| > 2 is "
+        f"2/√{years:.3f} = {minimum_detectable_sharpe:.2f}. No Sharpe below "
+        f"{minimum_detectable_sharpe:.2f} measured on this window can be "
+        "distinguished from luck. This backtest does not have the statistical power "
+        "to demonstrate an edge; it has the power to demonstrate a method."
+    )
+
+
+def _selection_note(walkforward: Mapping[str, Mapping[str, WalkForwardResult]]) -> str:
+    """Say explicitly whether the selection step actually discriminated anything."""
+    picks = {
+        (int(f.params["fast"]), int(f.params["slow"]))
+        for by_config in walkforward.values()
+        for result in by_config.values()
+        for f in result.folds
+    }
+    if len(picks) == 1:
+        fast, slow = next(iter(picks))
+        return (
+            f"**Selection is degenerate on this grid and this sample:** every fold of "
+            f"every configuration (anchored and rolling, both symbols) selects "
+            f"{fast}/{slow}, so this walk-forward is observationally equivalent to "
+            f"evaluating MA {fast}/{slow} in OOS. The protocol is correct; its "
+            "discriminating power is NOT demonstrated by this run (it is demonstrated "
+            "on synthetic data by the moving-optimum fixture of "
+            "`tests/test_walk_forward_evaluate.py`, where the argmax provably moves)."
+        )
+    listed = ", ".join(f"{fast}/{slow}" for fast, slow in sorted(picks))
+    return (
+        f"**Selection moved on this sample:** {len(picks)} distinct parameter sets "
+        f"retained across folds and configurations: {listed}."
+    )
+
+
+def _splice_note(stats: Mapping[str, Any]) -> str:
+    return (
+        f"**Fold splicing:** {stats['carried_positions']} of "
+        f"{stats['same_param_boundaries']} same-parameter fold boundaries carried a "
+        "non-zero position into the next fold (identical parameters → one continuous "
+        "backtest; a parameter change restarts flat). Forcing a flat restart at every "
+        "fold — the pre-splice convention — would have produced a total return of "
+        f"{_pct(stats['standalone_total_return'])} instead of "
+        f"{_pct(stats['spliced_total_return'])}: "
+        f"{stats['splice_delta_bps']:+.0f} bps of splice artifact (phantom re-entry "
+        "fees + forced-flat first bars), not trades."
+    )
+
+
 def build_walkforward_block(computed: Computed) -> str:
     (n_samples,) = {len(p) for p in computed.prices.values()}
     n_test = int(round(n_samples * WF_TEST_SIZE))
+    (oos_bars,) = {
+        len(result.oos.returns)
+        for by_config in computed.walkforward.values()
+        for result in by_config.values()
+    }
 
     lines = [
         WF_BEGIN_MARK,
         "_Generated by `python -m scripts.generate_results` — do not edit by hand"
         " (CI enforces sync)._",
         "",
-        f"**Protocol:** {WF_N_FOLDS} anchored walk-forward folds · OOS region = last "
+        f"**Protocol:** {WF_N_FOLDS} walk-forward folds in TWO configurations — "
+        "anchored (expanding train from bar 0; the pre-registered protocol) and "
+        "rolling (fixed-length train sliding forward) · OOS region = last "
         f"{n_test} of {n_samples} bars (test_size {WF_TEST_SIZE}), tiled by contiguous "
         f"test windows · purge {WF_PURGE} bars (= slow_max, the grid's longest "
         f"look-back) · embargo {WF_EMBARGO} bars · selection: argmax of TRAIN "
         f"{WF_SELECTION_METRIC} over the declared grid ({len(WF_GRID)} combos: "
         "fast ∈ {5, 10, 20, 50}, slow ∈ {20, 50, 100, 200}, fast < slow) · "
         f"costs {CONFIG.fee_bps:.0f} bps fee + {CONFIG.slippage_bps:.0f} bps slippage "
-        "per trade · execution: signal at close[t], fill at open[t+1] · each window is "
-        "backtested standalone (starts flat; bars before a window feed the MAs as "
-        "look-back; parameter choice sees train only).",
+        "per trade · execution: signal at close[t], fill at open[t+1] · bars before a "
+        "window feed the MAs as look-back; parameter choice sees train only · fold "
+        "boundary: identical selected parameters splice into one continuous backtest "
+        "(the position carries over; no phantom flat bar, no phantom re-entry fee), a "
+        "parameter change restarts flat · Sharpe error bar: Lo (2002) i.i.d.-normal "
+        "SE, ≈ 1/√(OOS years) — frequency-independent; serial dependence widens it "
+        "(conservative for a no-edge conclusion).",
+        "",
+        _power_note(oos_bars),
+        "",
+        _selection_note(computed.walkforward),
     ]
     prereg_notes: list[str] = []
     for symbol in SYMBOLS:
         prices = computed.prices[symbol]
-        result = computed.walkforward[symbol]
-        m = result.metrics
-        lines += [
-            "",
-            f"### {symbol}",
-            "",
-            "| Fold | Train (bars) | Test (bars) | Params fast/slow | Sharpe train "
-            "| Sharpe test | t-stat test |",
-            "|---|---|---|---|---|---|---|",
-            *_fold_rows(prices, result),
-            "",
-            f"**OOS, {len(result.oos.returns)} concatenated test bars:** "
-            f"Sharpe {_num(m['sharpe'])} · t-stat {_num(m['t_stat'])} · "
-            f"total return {_pct(m['total_return'])} · "
-            f"max drawdown {_pct(m['max_drawdown'])} · "
-            f"ann. turnover {m['annualized_turnover']:.1f} · Sortino {_num(m['sortino'])} · "
-            f"win rate {_pct_unsigned(m['win_rate'])}",
-            "",
-            _overfit_note(result),
-        ]
-        prereg_notes.append(_prereg_note(symbol, m))
-    lines += ["", "**Pre-registration check (auto-generated against the dated ranges above):**", ""]
+        for config_name, _anchored, config_desc in WF_CONFIG_LABELS:
+            result = computed.walkforward[symbol][config_name]
+            m = result.metrics
+            lines += [
+                "",
+                f"### {symbol} — {config_name} ({config_desc})",
+                "",
+                "| Fold | Train (bars) | Test (bars) | Params fast/slow | Sharpe train "
+                "| Sharpe test | t-stat test |",
+                "|---|---|---|---|---|---|---|",
+                *_fold_rows(prices, result),
+                "",
+                _oos_line(m, len(result.oos.returns)),
+                "",
+                _overfit_note(result),
+                "",
+                _splice_note(computed.splice[symbol][config_name]),
+            ]
+            if config_name == "anchored":
+                prereg_notes.append(_prereg_note(symbol, m))
+    lines += [
+        "",
+        "**Pre-registration check (anchored runs — the pre-registered protocol; auto-generated):**",
+        "",
+    ]
     lines += [f"- {note}" for note in prereg_notes]
     lines.append(WF_END_MARK)
     return "\n".join(lines)
@@ -374,12 +532,18 @@ def build_metrics_payload(computed: Computed) -> dict[str, Any]:
 
     walk_forward: dict[str, dict[str, Any]] = {}
     for symbol in SYMBOLS:
-        result = computed.walkforward[symbol]
-        walk_forward[symbol] = {
-            "folds": _fold_payload(computed.prices[symbol], result),
-            "oos_bars": len(result.oos.returns),
-            "oos": dict(result.metrics),
-        }
+        walk_forward[symbol] = {}
+        for config_name, anchored, _desc in WF_CONFIG_LABELS:
+            result = computed.walkforward[symbol][config_name]
+            ci_lo, ci_hi = _ci95(result.metrics)
+            walk_forward[symbol][config_name] = {
+                "anchored": anchored,
+                "folds": _fold_payload(computed.prices[symbol], result),
+                "oos_bars": len(result.oos.returns),
+                "oos": dict(result.metrics),
+                "oos_sharpe_ci95": [ci_lo, ci_hi],
+                "splice": dict(computed.splice[symbol][config_name]),
+            }
 
     datasets: dict[str, Any] = {}
     for symbol in SYMBOLS:
@@ -409,7 +573,7 @@ def build_metrics_payload(computed: Computed) -> dict[str, Any]:
                 "test_size": WF_TEST_SIZE,
                 "purge": WF_PURGE,
                 "embargo": WF_EMBARGO,
-                "anchored": True,
+                "configurations": [name for name, _anchored, _desc in WF_CONFIG_LABELS],
                 "selection_metric": WF_SELECTION_METRIC,
                 "grid": WF_GRID,
             },

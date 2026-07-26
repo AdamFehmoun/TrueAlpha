@@ -17,10 +17,12 @@ doing its job on an unsupported platform, not a tolerance to add.
 from __future__ import annotations
 
 import json
+import math
 from typing import Any
 
 import pytest
 
+from engine.metrics import calendar_bars_per_year
 from scripts.generate_results import (
     METRICS_PATH,
     PREREG_ALARM_SHARPE,
@@ -28,6 +30,8 @@ from scripts.generate_results import (
     PREREG_SHARPE_LO,
     PREREG_TSTAT_MAX,
     README_PATH,
+    RESULTS_TIMEFRAME,
+    Computed,
     compute_all,
     render_metrics_json,
 )
@@ -36,9 +40,14 @@ REGEN_HINT = "run `python -m scripts.generate_results` and commit the diff"
 
 
 @pytest.fixture(scope="module")
-def regenerated() -> str:
-    """One in-memory regeneration shared by the tests of this module."""
-    return render_metrics_json(compute_all())
+def computed() -> Computed:
+    """One in-memory computation shared by the tests of this module."""
+    return compute_all()
+
+
+@pytest.fixture(scope="module")
+def regenerated(computed: Computed) -> str:
+    return render_metrics_json(computed)
 
 
 def test_golden_metrics_file_is_committed() -> None:
@@ -91,3 +100,35 @@ def test_prereg_constants_match_the_dated_readme_prose() -> None:
     assert f"[{PREREG_SHARPE_LO:+.1f}, {PREREG_SHARPE_HI:+.1f}]" in readme
     assert f"|t-stat| < {PREREG_TSTAT_MAX:.0f}" in readme
     assert f"OOS Sharpe > {PREREG_ALARM_SHARPE:.1f}" in readme
+
+
+def test_prereg_correction_note_numbers_match_the_computed_run(computed: Computed) -> None:
+    """The dated 2026-07-26 correction note quotes data-derived numbers (range width
+    in SE, per-symbol deviations in SE, before and after the splice correction);
+    every one of them is recomputed here from the shared in-memory run and must
+    appear in the README verbatim -- hand-written numbers stay machine-checked."""
+    readme = README_PATH.read_bytes().decode("utf-8").replace("−", "-")
+
+    (oos_bars,) = {
+        len(result.oos.returns)
+        for by_config in computed.walkforward.values()
+        for result in by_config.values()
+    }
+    years = oos_bars / calendar_bars_per_year(RESULTS_TIMEFRAME)
+    theoretical_se = 1.0 / math.sqrt(years)  # the note's "1/sqrt(0.600 years) = 1.29"
+    assert f"1/√{years:.3f} years = {theoretical_se:.2f}" in readme
+    width = (PREREG_SHARPE_HI - PREREG_SHARPE_LO) / theoretical_se
+    assert f"**{width:.2f} SE** wide" in readme
+
+    deviations: dict[str, tuple[float, float]] = {}
+    for symbol, by_config in computed.walkforward.items():
+        m = by_config["anchored"].metrics
+        splice = computed.splice[symbol]["anchored"]
+        spliced_dev = (PREREG_SHARPE_LO - m["sharpe"]) / m["sharpe_se"]
+        standalone_dev = (PREREG_SHARPE_LO - splice["standalone_sharpe"]) / splice[
+            "standalone_sharpe_se"
+        ]
+        deviations[symbol.split("/")[0]] = (spliced_dev, standalone_dev)
+    btc, eth = deviations["BTC"], deviations["ETH"]
+    assert f"**{btc[0]:.2f} SE (BTC)** and **{eth[0]:.2f} SE (ETH)**" in readme
+    assert f"({btc[1]:.2f} SE and {eth[1]:.2f} SE under the flat-restart" in readme

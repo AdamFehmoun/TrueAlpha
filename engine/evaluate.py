@@ -10,13 +10,32 @@ The rule that makes the word "OOS" honest
   on the train window only, from a price history TRUNCATED at the end of train. The
   selection step is never shown a single bar past the end of train, so even a
   non-causal strategy could not leak the test window into the choice of parameters.
-- MEASUREMENT is confined to the test slice: the winning candidate is backtested on
-  the test window only, from a history truncated at the end of test.
+- MEASUREMENT is confined to the OOS region: the winning candidate is backtested on
+  test bars only, from a history truncated at the end of its SEGMENT (the maximal
+  run of same-parameter contiguous folds it belongs to -- see the boundary rule
+  below), never beyond the OOS region. For a causal strategy, per-fold measurement
+  differs from a per-fold truncation only in the boundary marking, proven
+  bar-for-bar by test_fold_test_returns_ignore_future_bars.
 
-Window backtests are standalone: each window starts flat (position 0), enters at the
-first bar its in-window signal dictates, and its last bar is marked at that bar's own
-close (``run_backtest``'s convention) -- never at an open beyond the window. The OOS
-equity is therefore the product of the fold equities, each fold starting at 1.0.
+Fold splicing (the boundary rule, decided by test_adjacent_folds_splice_exactly)
+--------------------------------------------------------------------------------
+Consecutive folds that select IDENTICAL parameters and whose test windows are
+contiguous form a SEGMENT, backtested as ONE window: the end-of-fold position
+carries into the next fold, so the boundary adds no artificial flat bar and no
+phantom re-entry fee. A real parameter change (or a gap between test windows)
+starts a new segment, which begins flat -- re-allocating to a new parameterization
+is actual behavior, not a splice artifact. Each segment starts flat (position 0),
+enters at the first bar its in-window signal dictates, and its LAST bar is marked
+at that bar's own close (``run_backtest``'s convention) -- never at an open beyond
+the segment. Per-fold results are slices of their segment's run (an interior
+fold's last bar is therefore marked at the next fold's first open -- the honest
+mark of a continuously held position); each fold's reported equity restarts at 1.
+A segment's outgoing position at a parameter change is NOT charged an exit fee:
+the engine never bills terminal liquidation (the same convention that makes the
+buy-and-hold identity "gross return net of the single entry fee"), so across such
+a boundary the positions series can step to 0 with no turnover entry. On the
+published runs this case never occurs -- the selection retains the same
+parameters on every fold.
 
 ``assert_no_leakage`` runs INSIDE this pipeline for every fold -- not only in tests.
 DoD criterion 4 demands that a strategy evaluation PASS the validator, not merely
@@ -101,8 +120,10 @@ def walk_forward_evaluate(
     2. every grid candidate is backtested on the TRAIN slice only -> selection metric;
     3. argmax on train (NaN scores can never win; ties break by grid order) -> ONE
        parameter set for this fold;
-    4. that parameter set is backtested on the TEST slice only -> the fold's OOS
-       returns.
+    4. that parameter set is backtested on the TEST region, spliced by segments:
+       consecutive folds with identical parameters and contiguous test windows run
+       as ONE backtest (position carries over the boundary), and a parameter change
+       resets to flat (see the module docstring's boundary rule).
 
     The K fold test slices are then concatenated chronologically into the OOS series
     on which ``metrics`` are computed. Raises an explicit error instead of guessing:
@@ -127,10 +148,21 @@ def walk_forward_evaluate(
     if not bool((np.diff(all_test) > 0).all()):
         raise ValueError("test windows must be chronological and disjoint across folds")
 
-    folds: list[FoldResult] = []
+    picks: list[tuple[dict[str, Any], float]] = []
     for k, split in enumerate(splits):
         # the validator runs INSIDE the pipeline for every fold (DoD criterion 4)
         assert_no_leakage(split.train, split.test, min_gap=split.purge + split.embargo)
+
+        # the vectorized engine marks bar t at open[t+1] WITHIN its window: a gapped
+        # window would silently compress the whole gap move into the pre-gap bar and
+        # bill it to the strategy as if the position were held across excluded bars.
+        # Non-contiguous windows are rejected loudly instead of mispriced silently.
+        for window_name, window in (("train", split.train), ("test", split.test)):
+            if not bool((np.diff(np.asarray(window)) == 1).all()):
+                raise ValueError(
+                    f"fold {k}: {window_name} window is not contiguous; the engine's "
+                    "next-open marking cannot price across excluded bars"
+                )
 
         selected: dict[str, Any] | None = None
         selected_score = float("nan")
@@ -149,17 +181,45 @@ def walk_forward_evaluate(
                 f"fold {k}: no grid candidate produced a finite {selection_metric!r} "
                 "on train; refusing to select a parameter set arbitrarily"
             )
+        picks.append((selected, selected_score))
 
-        test_result = _window_backtest(prices, strategy_factory, selected, split.test, cfg)
-        folds.append(
-            FoldResult(
-                fold=k,
-                split=split,
-                params=selected,
-                train_metric=selected_score,
-                test_result=test_result,
+    # splice rule: consecutive folds with identical parameters and contiguous test
+    # windows run as ONE backtest (the position carries over the fold boundary); a
+    # parameter change or a window gap starts a new segment, which begins flat
+    segments: list[list[int]] = [[0]]
+    for k in range(1, len(splits)):
+        same_params = picks[k][0] == picks[k - 1][0]
+        contiguous = int(splits[k].test[0]) == int(splits[k - 1].test[-1]) + 1
+        if same_params and contiguous:
+            segments[-1].append(k)
+        else:
+            segments.append([k])
+
+    folds: list[FoldResult] = []
+    for segment in segments:
+        window = np.concatenate([np.asarray(splits[k].test) for k in segment])
+        seg_result = _window_backtest(prices, strategy_factory, picks[segment[0]][0], window, cfg)
+        offset = 0
+        for k in segment:
+            n_k = len(splits[k].test)
+            fold_returns = seg_result.returns.iloc[offset : offset + n_k]
+            folds.append(
+                FoldResult(
+                    fold=k,
+                    split=splits[k],
+                    params=dict(picks[k][0]),
+                    train_metric=picks[k][1],
+                    test_result=BacktestResult(
+                        # fold-local equity restarts at 1; returns/positions/turnover
+                        # are the fold's exact slice of its segment's run
+                        equity=(1.0 + fold_returns).cumprod().rename("equity"),
+                        returns=fold_returns,
+                        positions=seg_result.positions.iloc[offset : offset + n_k],
+                        turnover=seg_result.turnover.iloc[offset : offset + n_k],
+                    ),
+                )
             )
-        )
+            offset += n_k
 
     returns = pd.concat([f.test_result.returns for f in folds])
     positions = pd.concat([f.test_result.positions for f in folds])

@@ -10,8 +10,10 @@ import pytest
 from engine.metrics import (
     annualized_turnover,
     cagr,
+    flat_share,
     max_drawdown,
     sharpe_ratio,
+    sharpe_standard_error,
     sharpe_tstat,
     sortino_ratio,
     total_return,
@@ -55,6 +57,68 @@ def test_sharpe_tstat_hand_computed() -> None:
 
 def test_sharpe_tstat_zero_volatility_is_nan() -> None:
     assert math.isnan(sharpe_tstat(_s([0.01, 0.01, 0.01])))
+
+
+def test_sharpe_standard_error_pins_the_219_bar_oos_error_bar() -> None:
+    """Lo (2002) SE of the annualized Sharpe on 219 daily bars = sqrt(365/219) = 1.291.
+
+    219 bars is exactly the repo's OOS window. The series alternates +/-1% (110 up,
+    109 down), so SR_bar = mean/std(ddof=1) = 4.56621e-5/0.01002279 = 0.00456 and
+    Lo's finite-Sharpe correction sqrt(1 + SR_bar^2/2) - 1 is ~5.2e-6 -- three
+    orders of magnitude below the 1e-3 pin, hence sqrt(365/219) = 1.29099... ==
+    1.291 within tolerance."""
+    returns = _s([0.01 if i % 2 == 0 else -0.01 for i in range(219)])
+    assert sharpe_standard_error(returns, timeframe="1d") == pytest.approx(1.291, abs=1e-3)
+
+
+def test_sharpe_standard_error_zero_volatility_is_nan() -> None:
+    assert math.isnan(sharpe_standard_error(_s([0.01, 0.01, 0.01])))
+
+
+def test_tstat_equals_sharpe_over_se_with_explicit_corrections() -> None:
+    """Internal coherence of t-stat and SE, EXACT at 1e-12 -- no fudge tolerance.
+
+    Derivation (1d bars, n = len(returns), SR_bar = mean/std):
+      Sharpe / SE = SR_bar*sqrt(365) / (sqrt(365) * sqrt((1 + SR_bar^2/2)/n))
+                  = SR_bar * sqrt(n / (1 + SR_bar^2/2))
+      t_stat      = SR_bar * sqrt(365) * sqrt(n/365.25) = SR_bar * sqrt(n * 365/365.25)
+    Hence, with BOTH corrections written out explicitly,
+      t_stat = (Sharpe / SE) * sqrt(365/365.25) * sqrt(1 + SR_bar^2/2)
+    where sqrt(365/365.25) is the t-stat's calendar-year convention and
+    sqrt(1 + SR_bar^2/2) is Lo's finite-Sharpe term. The identity is exact, so the
+    tolerance is 1e-12; anything looser would be hiding an inconsistency."""
+    returns = _s([0.013, -0.007, 0.021, 0.004, -0.016, 0.009, -0.002, 0.011])
+    sr_bar = float(returns.mean() / returns.std(ddof=1))
+    lhs = sharpe_tstat(returns, timeframe="1d")
+    rhs = (
+        sharpe_ratio(returns, timeframe="1d")
+        / sharpe_standard_error(returns, timeframe="1d")
+        * math.sqrt(365.0 / 365.25)
+        * math.sqrt(1.0 + sr_bar**2 / 2.0)
+    )
+    assert lhs == pytest.approx(rhs, rel=1e-12)
+
+
+def test_sharpe_standard_error_depends_only_on_calendar_span() -> None:
+    """Same calendar span sampled 24x finer: the SE does NOT shrink.
+
+    sqrt(A/n) is invariant when A and n scale together, so switching from daily to
+    hourly bars buys no statistical significance -- the docstring's claim, enforced.
+    Both series alternate +/-1% with an even length, so SR_bar is exactly 0 and both
+    SEs reduce to sqrt(A/n) exactly; 100 days of daily bars vs the same 100 days of
+    hourly bars must give the identical error bar."""
+    daily = _s([0.01 if i % 2 == 0 else -0.01 for i in range(100)])
+    hourly = _s([0.01 if i % 2 == 0 else -0.01 for i in range(100 * 24)])
+    se_daily = sharpe_standard_error(daily, timeframe="1d")
+    se_hourly = sharpe_standard_error(hourly, timeframe="1h")
+    assert se_daily == pytest.approx(se_hourly, rel=1e-12)
+    assert se_daily == pytest.approx(math.sqrt(365.0 / 100.0), rel=1e-12)
+
+
+def test_flat_share_counts_zero_position_bars() -> None:
+    assert flat_share(_s([0.0, 1.0, 0.0, 1.0])) == pytest.approx(0.5, abs=1e-15)
+    assert flat_share(_s([1.0, 1.0])) == 0.0
+    assert flat_share(_s([0.0, 0.0])) == 1.0
 
 
 def test_sortino_hand_computed() -> None:

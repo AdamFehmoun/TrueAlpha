@@ -88,6 +88,34 @@ def sharpe_ratio(returns: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> floa
     return float(r.mean() / std * np.sqrt(periods))
 
 
+def sharpe_standard_error(returns: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> float:
+    """Lo (2002) standard error of the ANNUALIZED Sharpe ratio, i.i.d.-NORMAL returns.
+
+    Per-bar: ``SE(SR_bar) = sqrt((1 + SR_bar^2 / 2) / n)``; annualized by
+    ``sqrt(bars_per_year)``, the same factor as the Sharpe itself. Since the
+    ``SR_bar^2 / 2`` term is negligible at bar scale, ``SE(SR_ann) ~= sqrt(A / n)
+    = 1 / sqrt(years)``: the error bar on a Sharpe depends ONLY on the CALENDAR
+    SPAN of the sample, not on the sampling frequency -- switching from daily to
+    hourly bars multiplies A and n by the same 24 and shrinks nothing.
+
+    Assumption scope, stated rather than hidden: the (1 + SR^2/2)/n variance is
+    Lo's i.i.d.-normal result (the general i.i.d. case adds skew/kurtosis terms,
+    Mertens 2002), and SERIAL DEPENDENCE -- e.g. the long/flat position
+    persistence of the strategies in this repo -- WIDENS the true SE beyond this
+    value. A wider true SE only strengthens a "not significant" conclusion, so
+    this estimate is conservative for the no-edge findings it annotates; it is
+    NOT conservative for declaring significance near the 1.96-SE boundary.
+    Zero volatility -> NaN (no Sharpe, no error bar).
+    """
+    r = returns.to_numpy(dtype="float64")
+    std = float(r.std(ddof=1))
+    if std == 0.0:
+        return float("nan")
+    sr_bar = float(r.mean()) / std
+    per_bar_se = np.sqrt((1.0 + sr_bar**2 / 2.0) / len(r))
+    return float(per_bar_se * np.sqrt(bars_per_year(timeframe)))
+
+
 def sharpe_tstat(returns: pd.Series, timeframe: str = DEFAULT_TIMEFRAME) -> float:
     """t-statistic of the annualized Sharpe: SR_ann * sqrt(n_years).
 
@@ -134,14 +162,26 @@ def win_rate(returns: pd.Series, positions: pd.Series) -> float:
     return float((r > 0.0).mean())
 
 
+def flat_share(positions: pd.Series) -> float:
+    """Fraction of bars held with a ZERO position.
+
+    Being flat is a real position (its zero returns belong in the series and depress
+    measured volatility); this reports how much of the sample it covers, next to a
+    win rate that -- by convention -- only counts the non-flat bars.
+    """
+    return float((positions.to_numpy(dtype="float64") == 0.0).mean())
+
+
 def summarize(result: BacktestResult, timeframe: str = DEFAULT_TIMEFRAME) -> dict[str, float]:
     return {
         "total_return": total_return(result.returns),
         "cagr": cagr(result.returns, timeframe),
         "sharpe": sharpe_ratio(result.returns, timeframe),
+        "sharpe_se": sharpe_standard_error(result.returns, timeframe),
         "t_stat": sharpe_tstat(result.returns, timeframe),
         "sortino": sortino_ratio(result.returns, timeframe),
         "max_drawdown": max_drawdown(result.returns),
         "annualized_turnover": annualized_turnover(result.turnover, timeframe),
         "win_rate": win_rate(result.returns, result.positions),
+        "flat_share": flat_share(result.positions),
     }
