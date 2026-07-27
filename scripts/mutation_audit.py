@@ -1,4 +1,4 @@
-"""Mutation audit of the walk-forward pipeline: 11 deliberate sabotages, one at a time.
+"""Mutation audit of the walk-forward pipeline: 12 deliberate sabotages, one at a time.
 
 Each mutation is applied to the source, the full pytest suite is rerun, and the dead
 tests are counted -- TARGETED tests (everything except tests/test_metrics_golden.py)
@@ -99,6 +99,12 @@ MUTATIONS: list[tuple[str, Path, str, str]] = [
         '"segment")',
         "        pass",
     ),
+    (
+        "M13 segment-level positional contiguity assertion disabled",
+        EVAL,
+        "        if not bool((np.diff(window) == 1).all()):",
+        "        if False:",
+    ),
 ]
 
 # Mutations EXPECTED to survive, with the reason. The mechanism is deliberate:
@@ -109,7 +115,16 @@ MUTATIONS: list[tuple[str, Path, str, str]] = [
 # truncation is redundant for them") and was then evicted:
 # test_history_truncation_hides_bars_beyond_the_window_even_from_a_non_causal_factory
 # kills it with a deliberately non-causal global-mean factory.
-EXPECTED_SURVIVORS: dict[str, str] = {}
+EXPECTED_SURVIVORS: dict[str, str] = {
+    "M13": (
+        "unreachable by construction: the splice rule appends fold k to the current "
+        "segment only when splits[k].test[0] == splits[k-1].test[-1] + 1, and every "
+        "fold window is contiguity-checked per fold, so the concatenated segment "
+        "window is contiguous by construction. The assertion guards the invariant, "
+        "not an input. If a test ever starts killing it, the splice rule has changed "
+        "and the invariant no longer holds -- investigate before removing this entry."
+    ),
+}
 
 
 def main() -> int:

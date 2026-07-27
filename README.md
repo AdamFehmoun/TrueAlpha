@@ -321,7 +321,7 @@ notebooks/    exploration only; nothing in a notebook is a result
 
 ### Mutation audit (campaign of 2026-07-26 — reproduce with `python -m scripts.mutation_audit`)
 
-Eleven deliberate sabotages of the walk-forward pipeline, applied one at a time;
+Twelve deliberate sabotages of the walk-forward pipeline, applied one at a time;
 the full suite is rerun after each and the dead tests are counted. **Targeted**
 kills exclude `tests/test_metrics_golden.py`, counted separately as **golden**
 kills: the golden only says "some number changed", not "this behavior is guarded".
@@ -350,6 +350,7 @@ meaning in this repo.
 | M9 | positional gapped-window rejection disabled | 2 | 0 |
 | M10 | chronological `all_test` check removed | 1 | 0 |
 | M12 | union calendar re-validation removed at segment level | 1 | 0 |
+| M13 | segment-level positional contiguity assertion disabled | 0 — **declared survivor** | 0 |
 
 M5–M10 and M12 kill **zero** golden tests because their branches never fire on the
 published runs (no tampered split, no parameter change, no non-adjacent or gapped
@@ -363,7 +364,13 @@ introduction — every committed strategy is causal, making the truncation redun
 which kills it with a deliberately non-causal global-mean factory. The audit script
 carries an explicit **expected-survivors mechanism** (`EXPECTED_SURVIVORS`): an
 unexpected survivor fails the audit, and an expected survivor that starts dying
-fails it too; the list is empty today. The audit is not CI-enforced (it reruns the
+fails it too. The list holds exactly one entry: **M13, a DECLARED survivor** — the
+segment-level contiguity assertion is unreachable by construction (the splice rule
+only appends a fold when `splits[k].test[0] == splits[k-1].test[-1] + 1`, and every
+fold window is contiguity-checked per fold), so no untampered input can trigger it;
+it guards the invariant, not an input. If a test ever starts killing M13, the
+splice rule has changed and the invariant no longer holds — investigate before
+touching the entry. The audit is not CI-enforced (it reruns the
 full suite once per mutation); the script restores the sources after each mutation
 and **exits 1 on any audit failure**. Counts are from the commit-8 tree — the suite
 has grown at every commit, so kill counts grow with it.
