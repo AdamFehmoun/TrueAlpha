@@ -59,16 +59,17 @@ def test_sharpe_tstat_zero_volatility_is_nan() -> None:
     assert math.isnan(sharpe_tstat(_s([0.01, 0.01, 0.01])))
 
 
-def test_sharpe_standard_error_pins_the_219_bar_oos_error_bar() -> None:
-    """Lo (2002) SE of the annualized Sharpe on 219 daily bars = sqrt(365/219) = 1.291.
+def test_sharpe_standard_error_pins_the_oos_error_bar() -> None:
+    """Lo (2002) SE of the annualized Sharpe on 648 daily bars = sqrt(365/648) = 0.7505.
 
-    219 bars is exactly the repo's OOS window. The series alternates +/-1% (110 up,
-    109 down), so SR_bar = mean/std(ddof=1) = 4.56621e-5/0.01002279 = 0.00456 and
-    Lo's finite-Sharpe correction sqrt(1 + SR_bar^2/2) - 1 is ~5.2e-6 -- three
-    orders of magnitude below the 1e-3 pin, hence sqrt(365/219) = 1.29099... ==
-    1.291 within tolerance."""
-    returns = _s([0.01 if i % 2 == 0 else -0.01 for i in range(219)])
-    assert sharpe_standard_error(returns, timeframe="1d") == pytest.approx(1.291, abs=1e-3)
+    648 bars is exactly the repo's OOS window on the B4 span (round(3240 x 0.2)).
+    The series alternates +/-1% over an EVEN count (324 up, 324 down), so the mean
+    is exactly zero, Lo's finite-Sharpe correction vanishes, and the SE reduces to
+    sqrt(365/648) = 0.75051... == 0.7505 within the 1e-3 pin. (The archived
+    2022-2024 OOS window, 219 bars, corresponds to sqrt(365/219) = 1.291 -- the
+    error bar the archived golden was published with.)"""
+    returns = _s([0.01 if i % 2 == 0 else -0.01 for i in range(648)])
+    assert sharpe_standard_error(returns, timeframe="1d") == pytest.approx(0.7505, abs=1e-3)
 
 
 def test_sharpe_standard_error_zero_volatility_is_nan() -> None:

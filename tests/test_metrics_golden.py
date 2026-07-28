@@ -22,8 +22,11 @@ from typing import Any
 
 import pytest
 
+from engine.evaluate import WalkForwardResult, walk_forward_evaluate
 from engine.metrics import calendar_bars_per_year
+from engine.splits import walk_forward_splits
 from scripts.generate_results import (
+    CONFIG,
     METRICS_PATH,
     PREREG_ALARM_SHARPE,
     PREREG_SHARPE_HI,
@@ -31,12 +34,21 @@ from scripts.generate_results import (
     PREREG_TSTAT_MAX,
     README_PATH,
     RESULTS_TIMEFRAME,
+    WF_EMBARGO,
+    WF_GRID,
+    WF_N_FOLDS,
+    WF_PURGE,
+    WF_SELECTION_METRIC,
+    WF_TEST_SIZE,
     Computed,
+    _ma_factory,
+    _splice_stats,
     compute_all,
     render_metrics_json,
 )
 
 REGEN_HINT = "run `python -m scripts.generate_results` and commit the diff"
+ARCHIVE_PATH = METRICS_PATH.parent / "archive" / "metrics-2022-2024.json"
 
 
 @pytest.fixture(scope="module")
@@ -48,6 +60,37 @@ def computed() -> Computed:
 @pytest.fixture(scope="module")
 def regenerated(computed: Computed) -> str:
     return render_metrics_json(computed)
+
+
+@pytest.fixture(scope="module")
+def slice_2022_2024(computed: Computed) -> dict[str, dict[str, WalkForwardResult]]:
+    """The 2022-01-01..2024-12-31 slice of the CURRENT data, run through the
+    engine with the exact published protocol -- the object of the B4
+    pre-registration's prediction (d)."""
+    out: dict[str, dict[str, WalkForwardResult]] = {}
+    for symbol, prices in computed.prices.items():
+        prices_slice = prices.loc["2022-01-01":"2024-12-31"]
+        assert len(prices_slice) == 1096  # the old sample is an exact subset
+        out[symbol] = {}
+        for config_name, anchored in (("anchored", True), ("rolling", False)):
+            splits = walk_forward_splits(
+                len(prices_slice),
+                WF_N_FOLDS,
+                WF_TEST_SIZE,
+                WF_PURGE,
+                WF_EMBARGO,
+                anchored=anchored,
+            )
+            out[symbol][config_name] = walk_forward_evaluate(
+                prices_slice,
+                _ma_factory,
+                WF_GRID,
+                splits,
+                CONFIG,
+                WF_SELECTION_METRIC,
+                RESULTS_TIMEFRAME,
+            )
+    return out
 
 
 def test_golden_metrics_file_is_committed() -> None:
@@ -70,19 +113,21 @@ def test_golden_metrics_is_strict_json_with_null_for_undefined() -> None:
     An undefined metric (a fold entirely flat over its test window has no Sharpe)
     is serialized as ``null`` -- the only strict-JSON representation; "NaN" strings
     are non-standard and break jq and most non-Python parsers. The strict parse is
-    enforced with a ``parse_constant`` that fails on any bare token, and the four
-    known undefined values (ETH/USDT fold 3, both configurations) must be null.
-    """
+    enforced with a ``parse_constant`` that fails on any bare token. On the
+    archived 2022-2024 sample, ETH fold 3 was flat and carried four nulls; on the
+    B4 span every fold is measurable, so the current golden must contain NO null
+    fold metric -- pinned here so a flat fold reappearing is seen, not skimmed."""
 
     def _reject(token: str) -> None:
         pytest.fail(f"bare {token} token in metrics.json -- strict JSON forbids it")
 
     payload = json.loads(METRICS_PATH.read_bytes().decode("utf-8"), parse_constant=_reject)
     assert set(payload) == {"config", "data", "full_sample", "walk_forward"}
-    for config_name in ("anchored", "rolling"):
-        fold3 = payload["walk_forward"]["ETH/USDT"][config_name]["folds"][2]
-        assert fold3["test_sharpe"] is None  # flat fold => Sharpe undefined => null
-        assert fold3["test_t_stat"] is None
+    for symbol_block in payload["walk_forward"].values():
+        for config_block in symbol_block.values():
+            for fold in config_block["folds"]:
+                assert fold["test_sharpe"] is not None  # every B4 fold is measurable
+                assert fold["test_t_stat"] is not None
     assert '"NaN"' not in METRICS_PATH.read_bytes().decode("utf-8")
 
 
@@ -110,33 +155,29 @@ def test_prereg_constants_match_the_dated_readme_prose() -> None:
     assert f"OOS Sharpe > {PREREG_ALARM_SHARPE:.1f}" in readme
 
 
-def test_anchored_and_rolling_oos_are_bit_identical_while_selection_is_degenerate(
-    computed: Computed,
-) -> None:
-    """The degeneracy witness: anchored and rolling produce bit-identical OOS
-    blocks (returns, positions, every metric, every per-fold test Sharpe) BECAUSE
-    5/200 wins every fold record, so both protocols build the same segments and the
-    same equity curve. This is NOT robustness to the protocol choice, and the
-    README says so next to the tables. The day this test breaks, the selection has
-    stopped being degenerate -- that is a result to be seen, not a failure to be
-    silenced."""
-    import pandas as pd
-
-    from engine.metrics import sharpe_ratio
-
-    for _symbol, by_config in computed.walkforward.items():
+def test_config_identity_follows_selection_degeneracy(computed: Computed) -> None:
+    """Anchored and rolling produce bit-identical OOS series EXACTLY when they
+    select the same parameters on every fold: same picks => same segments =>
+    same equity curve. On the archived 2022-2024 sample this held 20/20 and was
+    published as a DEGENERACY, not robustness; prediction (b) of the B4
+    pre-registration said the span extension must break it -- and it did: BTC's
+    rolling run re-selects mid-run (5/50 then 5/100), the first real parameter
+    change of the project, and its OOS series diverges from anchored, while ETH
+    still picks a single point (10/20) in both configs and stays bit-identical.
+    The structural rule is asserted for every symbol, and today's observed state
+    is pinned so any silent flip back is seen."""
+    identity: dict[str, bool] = {}
+    for symbol, by_config in computed.walkforward.items():
         anchored, rolling = by_config["anchored"], by_config["rolling"]
-        pd.testing.assert_series_equal(anchored.oos.returns, rolling.oos.returns, check_exact=True)
-        pd.testing.assert_series_equal(
-            anchored.oos.positions, rolling.oos.positions, check_exact=True
+        same_picks = all(
+            fold_a.params == fold_r.params
+            for fold_a, fold_r in zip(anchored.folds, rolling.folds, strict=True)
         )
-        # repr-compare: bit-level equality that also treats NaN == NaN (ETH fold 3)
-        assert repr(sorted(anchored.metrics.items())) == repr(sorted(rolling.metrics.items()))
-        for fold_a, fold_r in zip(anchored.folds, rolling.folds, strict=True):
-            assert fold_a.params == fold_r.params
-            sharpe_a = sharpe_ratio(fold_a.test_result.returns, anchored.timeframe)
-            sharpe_r = sharpe_ratio(fold_r.test_result.returns, rolling.timeframe)
-            assert repr(sharpe_a) == repr(sharpe_r)
+        series_equal = bool(anchored.oos.returns.equals(rolling.oos.returns))
+        assert same_picks == series_equal  # the structural rule, both directions
+        identity[symbol.split("/")[0]] = series_equal
+    # observed state after B4 -- prediction (b) realized on BTC, ETH still degenerate
+    assert identity == {"BTC": False, "ETH": True}
 
 
 def test_coverage_convention_numbers_match_the_computed_run(computed: Computed) -> None:
@@ -163,8 +204,13 @@ def test_coverage_convention_numbers_match_the_computed_run(computed: Computed) 
             t_exp,
             result.n_bars_exposed,
         )
+    (oos_bars,) = {
+        len(result.oos.returns)
+        for by_config in computed.walkforward.values()
+        for result in by_config.values()
+    }
     eth, btc = values["ETH"], values["BTC"]
-    assert f"Sharpe {eth[0]:.4f} on all 219 bars" in readme
+    assert f"Sharpe {eth[0]:.4f} on all {oos_bars} bars" in readme
     assert f"**{eth[1]:.4f}** on" in readme
     assert f"its {eth[4]} exposed bars" in readme
     magnitude = (abs(eth[1] / eth[0]) - 1.0) * 100.0
@@ -173,30 +219,78 @@ def test_coverage_convention_numbers_match_the_computed_run(computed: Computed) 
     assert f"BTC: {btc[0]:.4f} → {btc[1]:.4f}, t {btc[2]:.3f} → {btc[3]:.3f}" in readme
 
 
-def test_carried_boundaries_are_exactly_one_per_symbol_and_config(computed: Computed) -> None:
-    """A3 pin: on the published 1d runs, exactly ONE fold boundary carries a
-    position (fold 4 -> fold 5, 2024-11-17 -> 2024-11-18) for each symbol, in BOTH
-    configurations. This count is what moved the OOS figures when splicing was
-    introduced; if it ever changes, the published numbers move with it -- so it is
-    asserted here, from the engine's own counter."""
+def test_carried_boundaries_are_pinned_per_symbol_and_config(computed: Computed) -> None:
+    """A3 pin, re-pinned at B4 (the previous pin -- exactly 1 everywhere, at
+    2024-11-17 -> 2024-11-18 -- fell as designed when the sample moved): BTC
+    anchored carries at folds 1->2, 2->3 and 3->4 (2025-01-27/28, 2025-06-06/07,
+    2025-10-13/14); BTC rolling carries only at 2->3 -- its fold 1->2 boundary is
+    the project's first real parameter change (5/50 -> 5/100) and resets flat;
+    ETH carries at 2->3 and 3->4 in both configs. This count moves the published
+    numbers with it, so it stays asserted from the engine's own counter."""
+    expected = {
+        ("BTC/USDT", "anchored"): 3,
+        ("BTC/USDT", "rolling"): 1,
+        ("ETH/USDT", "anchored"): 2,
+        ("ETH/USDT", "rolling"): 2,
+    }
     for symbol, by_config in computed.walkforward.items():
         for config_name, result in by_config.items():
-            assert result.n_carried_boundaries == 1, (
-                f"{symbol} {config_name}: expected exactly 1 carried boundary, "
+            assert result.n_carried_boundaries == expected[(symbol, config_name)], (
+                f"{symbol} {config_name}: expected "
+                f"{expected[(symbol, config_name)]} carried boundaries, "
                 f"got {result.n_carried_boundaries}"
             )
 
 
-def test_prereg_correction_note_numbers_match_the_computed_run(computed: Computed) -> None:
-    """The dated 2026-07-26 correction note quotes data-derived numbers (range width
-    in SE, per-symbol deviations in SE, before and after the splice correction);
-    every one of them is recomputed here from the shared in-memory run and must
-    appear in the README verbatim -- hand-written numbers stay machine-checked."""
+def test_2022_2024_slice_reproduces_the_archived_golden_bit_for_bit(
+    slice_2022_2024: dict[str, dict[str, WalkForwardResult]],
+) -> None:
+    """Prediction (d) of the B4 pre-registration, held as a PERMANENT guard: the
+    archived 2022-2024 OOS numbers (results/archive/metrics-2022-2024.json,
+    frozen at step 0) must be reproducible from the CURRENT data's
+    2022-01-01..2024-12-31 slice, bit for bit -- the old sample is an exact
+    subset of the new one. A failure here means either Binance restated its
+    history or a result depends on the extent of the frame around it; both are
+    defects that outrank any span extension."""
+    archive = json.loads(ARCHIVE_PATH.read_bytes().decode("utf-8"))
+    for symbol, by_config in slice_2022_2024.items():
+        for config_name, result in by_config.items():
+            archived_oos = archive["walk_forward"][symbol][config_name]["oos"]
+            for key in (
+                "sharpe",
+                "sharpe_se",
+                "t_stat",
+                "total_return",
+                "max_drawdown",
+                "annualized_turnover",
+                "sortino",
+                "win_rate",
+                "flat_share",
+            ):
+                assert repr(result.metrics[key]) == repr(archived_oos[key]), (
+                    f"{symbol} {config_name} {key}: slice={result.metrics[key]!r} "
+                    f"archive={archived_oos[key]!r} -- Binance restatement or "
+                    "frame-extent dependence; this outranks B4"
+                )
+
+
+def test_prereg_correction_note_numbers_match_the_2022_2024_slice(
+    computed: Computed,
+    slice_2022_2024: dict[str, dict[str, WalkForwardResult]],
+) -> None:
+    """Step 4-bis of B4-B, the method decision written down: the dated 26/07
+    correction note keeps its numbers VERBATIM ("the original text above is kept
+    verbatim" is its own first line), and those numbers stay machine-checked --
+    not against the CURRENT run (which now covers 2017-2026 and would force a
+    history rewrite), but against the 2022-01-01..2024-12-31 SLICE of the
+    current data, which prediction (d) guarantees reproduces the old sample
+    exactly. History stays history; the numbers stay recomputable; and a failure
+    here is a Binance restatement or a frame-extent dependence, not prose rot."""
     readme = README_PATH.read_bytes().decode("utf-8").replace("−", "-")
 
     (oos_bars,) = {
         len(result.oos.returns)
-        for by_config in computed.walkforward.values()
+        for by_config in slice_2022_2024.values()
         for result in by_config.values()
     }
     years = oos_bars / calendar_bars_per_year(RESULTS_TIMEFRAME)
@@ -206,9 +300,11 @@ def test_prereg_correction_note_numbers_match_the_computed_run(computed: Compute
     assert f"**{width:.2f} SE** wide" in readme
 
     deviations: dict[str, tuple[float, float]] = {}
-    for symbol, by_config in computed.walkforward.items():
-        m = by_config["anchored"].metrics
-        splice = computed.splice[symbol]["anchored"]
+    for symbol, by_config in slice_2022_2024.items():
+        result = by_config["anchored"]
+        m = result.metrics
+        prices_slice = computed.prices[symbol].loc["2022-01-01":"2024-12-31"]
+        splice = _splice_stats(prices_slice, result)
         spliced_dev = (PREREG_SHARPE_LO - m["sharpe"]) / m["sharpe_se"]
         standalone_dev = (PREREG_SHARPE_LO - splice["standalone_sharpe"]) / splice[
             "standalone_sharpe_se"

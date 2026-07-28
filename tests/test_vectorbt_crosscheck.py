@@ -105,8 +105,13 @@ def test_standard_fees_agree_up_to_isolated_fee_model_difference(
     assert ours_growth == pytest.approx(vbt_growth * (1.0 - c**2) ** n_buys, rel=1e-9)
 
     # the c^2-per-buy perturbation moves per-bar returns by ~1e-6 on n_buys of the
-    # n = 1096 bars, shifting Sharpe and max drawdown by O(n_buys * c^2) ~ 1e-5;
-    # 1e-4 is that analytic scale with a 10x buffer (observed differences: ~1e-5)
+    # n = 3240 bars, shifting Sharpe and max drawdown by O(n_buys * c^2); with
+    # n_buys ~ 40 on this span that is ~4e-5, so the unchanged 1e-4 tolerance keeps
+    # a ~2.5x analytic buffer (down from 10x on the 1096-bar sample). Pre-engaged
+    # rule (B4): if the observed gap ever exceeds 1e-4, the bound is recomputed
+    # from the REAL n_buys and the tolerance becomes that bound x the original 10x
+    # margin, derived here -- never widened on sight; an unexplained disagreement
+    # with the oracle is a RESULT, not a nuisance.
     assert sharpe_ratio(ours.returns) == pytest.approx(float(pf.sharpe_ratio()), abs=1e-4)
     assert max_drawdown(ours.returns) == pytest.approx(float(pf.max_drawdown()), abs=1e-4)
 

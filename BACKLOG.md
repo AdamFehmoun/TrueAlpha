@@ -88,20 +88,26 @@ the cheapest thing that can explain away a claimed edge.
 
 *Opened by the jury, audit n°7 (2026-07-27).*
 
+### B10 — Exit-fee re-billing is one bar off in timing (trigger fired, was 🟢)
+**Moved to blocking 2026-07-28: its own written trigger fired. Due: 2026-08-12
+(with B5).**
+
+`exit_fee_bias_bps` re-bills the uncharged exit at the **last** bar of its
+segment; a continuous book would bill it at the **first** bar of the next
+segment. Exact in amount, one bar off in timing. The written trigger — "turns 🔴
+the moment `n_segments > 1`" — fired at the B4-B run: BTC rolling has
+`n_segments = 2`. Mitigating fact, stated precisely: the observed segment
+boundary (fold 1→2, the 5/50 → 5/100 parameter change) carries an outgoing
+position of **0.0**, so there is no unbilled boundary exit and the timing
+question has zero monetary effect on the published figures today — the only
+uncharged exit remains the terminal one. The item is blocking because the next
+run with a non-zero outgoing position at a parameter change will make the
+one-bar timing approximation a real number, and the treatment must be decided
+before that happens, not after.
+
 ---
 
 ## 🟠 Due, not blocking
-
-### B4 — Buy calendar span, not sampling frequency
-**Rule 1 / statistical power.** **Due: 2026-07-30 (AVANCÉ, révisé le 28/07,
-voir « Ré-datation » ; date initiale 2026-08-10).**
-
-`SE(Sharpe_ann) ≈ 1/√(years)` depends on the calendar span alone, not on the
-number of bars. The 219 out-of-sample daily bars are 0.600 yr, so the smallest
-Sharpe detectable at |t| > 2 is **2.58** — a threshold no honest strategy will
-clear. Binance BTC/USDT history reaches back to 2017-08; ~7.4 yr brings that
-floor to **1.63**. Going to 1h bars over the same span does *not* help, and the
-1h series already in `manifest.json` must not be mistaken for added power.
 
 ### B5 — Re-selection must actually bite
 **Rule 6 / walk-forward validity.** **Due: 2026-08-12 (révisé le 28/07, voir
@@ -114,6 +120,14 @@ correct machinery producing a degenerate outcome — which is documented, but
 means the protocol is currently *decorative*. Either the grid must be wide
 enough that selection changes across folds, or the degeneracy must be stated as
 a finding rather than carried as a feature. Ties to B10.
+
+**Addendum 2026-07-28 (B4-B run):** the premise fell. On the 3,240-bar span the
+selection moved — three distinct parameter sets across the four runs (5/50,
+5/100, 10/20), and BTC rolling re-selects MID-RUN (5/50 on fold 1, 5/100 after:
+`n_segments = 2`, the project's first real parameter change). Re-selection now
+demonstrably bites. What remains of this item at its due date is the narrower
+question of whether the 13-combo grid gives selection enough room to be
+meaningful, or whether it should be widened deliberately.
 
 ### B8 — Monthly README prose review
 **Rule 7** (« Revue mensuelle obligatoire : chaque phrase du README est soit
@@ -151,14 +165,6 @@ deviation so it cannot pass silently when run.
 **Turns 🔴 if** the suite gets fast enough to run it per-commit, or if a
 mutation table entry is ever found stale in an audit.
 
-### B10 — Exit-fee re-billing is one bar off in timing
-`exit_fee_bias_bps` re-bills the uncharged exit at the **last** bar of its
-segment; a continuous book would bill it at the **first** bar of the next
-segment. Exact in amount, one bar off in timing, and without any effect on the
-published figures today: one segment, one terminal exit (see B5).
-
-**Turns 🔴 the moment `n_segments > 1`**, i.e. the day B5 is closed.
-
 ### B11 — M13 is a guard with no reachable caller
 The segment-level positional-contiguity assertion in `engine/evaluate.py` cannot
 fire on any untampered input: the splice rule appends fold *k* only when
@@ -172,23 +178,28 @@ tripwire on the splice rule itself.
 and the invariant no longer holds.
 
 ### B12 — The 1h series are hash-pinned and unused
-`manifest.json` pins BTC/USDT and ETH/USDT at 1h (26 303 rows each, one shared
-hole at `2023-03-24T13:00:00Z`) and no published number uses them, which the
-README states explicitly. Accepted because data is not code and the non-use is
-declared at the point of presentation — the opposite of Fahm.io's pgvector,
-where the UI button existed and the pipeline was never called.
+`manifest.json` pins BTC/USDT and ETH/USDT at 1h (77 628 rows each on the B4
+span, 132 shared exchange-maintenance holes pinned by timestamp — figures
+refreshed 2026-07-28 at the B4-B download; previously 26 303 rows / 1 hole on
+the 2022-2024 span) and no published number uses them, which the README states
+explicitly. Accepted because data is not code and the non-use is declared at
+the point of presentation — the opposite of Fahm.io's pgvector, where the UI
+button existed and the pipeline was never called.
 
 **Turns 🔴 if** any 1h figure is published, or if the README stops saying they
 are unused.
 
 ### B15 — Family-wise error: the tested-hypotheses counter stands at 2
 The B4 span extension is the SECOND test of the same hypothesis — "the MA
-crossover family has an edge" — on overlapping data: 2022-2024 published, then
-~2017-2026 pre-registered (README, section B4). Every additional test of the
-family inflates the probability that one of them clears a significance bar by
-luck; at this scale the honest mitigation is to count and say it.
-**Counter: 2.** Increment it in this entry with every new run testing the same
-family, and cite it next to any significance claim.
+crossover family has an edge" — on overlapping data: 2022-2024 published, and
+2017-2026 pre-registered at B4-A then EXECUTED at B4-B (2026-07-28). Every
+additional test of the family inflates the probability that one of them clears
+a significance bar by luck; at this scale the honest mitigation is to count and
+say it. **Counter: 2 — both executed.** Counting rule, written down 2026-07-28:
+the counter increments when a NEW test of the family is *pre-registered*, not
+when it is executed — executing pre-registered test n°2 does not create a test
+n°3, and incrementing at execution would double-count every future
+pre-registered run. Cite the counter next to any significance claim.
 
 **Turns 🔴 if** a significance claim is ever published without the family
 count, or if the counter passes 5 without a formal multiple-comparisons
@@ -232,6 +243,36 @@ re-verifies every target's sha256 at the end — success or failure — printing
 (`tests/test_mutation_audit.py`); the restoration-despite-exception test is the
 one that would have caught the incident.
 
+### D2 gate incident — exit codes swallowed by a pipe (operator error, logged)
+**Rule 4 / Rule 7. Occurred and closed 2026-07-28 — logged with the same
+prominence as the jury-provoked B13, because an asymmetry between memorialized
+jury errors and buried operator errors is exactly the drift Rule 5 exists to
+stop.**
+
+The local gate that guarded the D2 commit piped `ruff format --check` and
+`mypy` through `tail`, which swallowed their non-zero exit codes: D2 (`9f8c0ea`)
+was pushed with one unformatted file and two strict-typing errors, and its CI
+run **30322209543 failed**. The failure class is B13's — an instrument lying by
+truncation — caught in the very commit that was hardening the instrument. Fixed
+forward (no history rewrite) by `b9bdae8`: tests patch `subprocess.run` at its
+source module, the file is formatted, the gate runs under `set -o pipefail`
+with a reported exit per step, and its CI run **30322287611 succeeded**. Every
+gate script since carries the same discipline.
+
+### B4 — Buy the calendar span, not the sampling frequency (closed by the B4-B run)
+**Rule 1 / statistical power. Closed 2026-07-28, two days ahead of its advanced
+due date (2026-07-30).**
+
+`SE(Sharpe_ann) ≈ 1/√(years)` depends on the calendar span alone. The archived
+219-bar OOS was 0.600 yr — smallest detectable Sharpe at |t| > 2: **2.58**, a
+bar no honest strategy clears. The entry's original justification ("~7.4 yr
+brings that floor to 1.63") predated the frozen END and was one revision behind
+its own pre-registration; corrected here per audit reservation R6: the probed
+span is 2017-08-17 → 2026-06-30 = **8.87 yr**, its 648-bar OOS = **1.774 yr**,
+and the floor becomes **1.50** — the pre-registration's number, now the
+published run's number. Going to 1h bars over the same span does *not* help,
+and the 1h series in `manifest.json` must not be mistaken for added power.
+
 | # | Item | Rule | Closed | Commit |
 |---|---|---|---|---|
 | — | Boundary calendar holes internal to a spliced window unchecked | 2 | 2026-07-27 | `4a044ac` (M12) |
@@ -240,5 +281,7 @@ one that would have caught the incident.
 | — | `POSTMORTEM.md` governing the repo from outside the repo | 7, 8 | 2026-07-27 | commit 10 (`f59d284`) |
 | — | No debt ledger with due dates (Rule 8's amended clause had nothing to operate on) | 8 | 2026-07-27 | commit 10 (`f59d284`) — this file |
 | B6 | GitHub Actions Node 20 deprecation | 4 | 2026-07-28 | `0d567c0` (D1) — annotation list verified empty on run 30321961542 |
-| B13 | Mutation audit: dirty base accepted, no restoration guarantee on death | 5, 7 | 2026-07-28 | `9f8c0ea` (D2) |
+| B13 | Mutation audit: dirty base accepted, no restoration guarantee on death | 5, 7 | 2026-07-28 | `b9bdae8` (D2 + its gate fix; `9f8c0ea` alone shipped red — see the D2 gate incident above) |
 | B7 | Rule 1's "hors git" clause: amended in writing (50 MB threshold), not silently deviated from | 1, 7 | 2026-07-27 | commit 10 (`f59d284`) — AMENDEMENTS section of POSTMORTEM.md |
+| — | D2 gate incident: pipe swallowed format/mypy failures, D2 pushed red | 4, 7 | 2026-07-28 | `b9bdae8` — runs 30322209543 (failure) → 30322287611 (success) |
+| B4 | Span extension 2017-08-17 → 2026-06-30: power floor 2.58 → 1.50, four predictions confronted | 1 | 2026-07-28 | B4-B — this commit |

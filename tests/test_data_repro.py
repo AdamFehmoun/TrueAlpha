@@ -37,8 +37,8 @@ def test_manifest_exists() -> None:
 
 def test_manifest_records_the_absolute_dates_from_code() -> None:
     manifest = read_manifest()
-    assert manifest["start"] == START == "2022-01-01T00:00:00Z"
-    assert manifest["end"] == END == {"1d": "2024-12-31T00:00:00Z", "1h": "2024-12-31T23:00:00Z"}
+    assert manifest["start"] == START == "2017-08-17T00:00:00Z"
+    assert manifest["end"] == END == {"1d": "2026-06-30T00:00:00Z", "1h": "2026-06-30T23:00:00Z"}
     assert sorted(manifest["timeframes"]) == sorted(TIMEFRAMES) == ["1d", "1h"]
     # dates must parse as absolute, timezone-aware instants
     assert pd.Timestamp(manifest["start"]).tzinfo is not None
@@ -63,22 +63,24 @@ def test_daily_calendar_is_complete_and_utc(symbol: str) -> None:
         start=pd.Timestamp(START), end=pd.Timestamp(END["1d"]), freq="D", name=df.index.name
     )
     assert df.index.equals(expected)
-    assert len(df) == 1096  # 2022 (365) + 2023 (365) + 2024 (366)
+    # 2017: 137 (Aug 17 -> Dec 31) + 2018-2025: 2922 (8 years, leaps 2020 and
+    # 2024) + 2026: 181 (Jan 1 -> Jun 30) = 3240
+    assert len(df) == 3240
     manifest = read_manifest()
     assert manifest["datasets"][symbol]["1d"]["missing_bars"] == []
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)
 def test_hourly_calendar_is_the_full_span_minus_pinned_holes_only(symbol: str) -> None:
-    """26,304 expected hourly bars (1096 days x 24); every absent bar is pinned."""
+    """77,760 expected hourly bars (3240 days x 24); every absent bar is pinned."""
     manifest = read_manifest()
     entry = manifest["datasets"][symbol]["1h"]
     df = load_ohlcv(symbol, timeframe="1h")  # loader re-verifies hash AND calendar
     expected = expected_calendar(START, END["1h"], "1h")
-    assert len(expected) == 26_304
+    assert len(expected) == 77_760
     pinned = pd.DatetimeIndex(pd.to_datetime(entry["missing_bars"], utc=True))
     assert df.index.equals(expected.difference(pinned))
-    assert len(df) == 26_304 - len(pinned)
+    assert len(df) == 77_760 - len(pinned)
 
 
 @pytest.mark.parametrize("symbol", SYMBOLS)

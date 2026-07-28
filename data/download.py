@@ -36,9 +36,10 @@ SYMBOLS = ("BTC/USDT", "ETH/USDT")
 TIMEFRAMES: Final = ("1d", "1h")
 # Absolute dates only. END is the open time of the LAST candle, inclusive; both
 # timeframes cover the identical calendar span (the last hourly candle of
-# 2024-12-31 opens at 23:00).
-START = "2022-01-01T00:00:00Z"
-END: Final[dict[str, str]] = {"1d": "2024-12-31T00:00:00Z", "1h": "2024-12-31T23:00:00Z"}
+# 2026-06-30 opens at 23:00). START is the first daily candle Binance serves for
+# BOTH symbols, probed live (B4 pre-registration); END is the last complete month.
+START = "2017-08-17T00:00:00Z"
+END: Final[dict[str, str]] = {"1d": "2026-06-30T00:00:00Z", "1h": "2026-06-30T23:00:00Z"}
 
 _TIMEFRAME_MS: Final[dict[str, int]] = {"1d": 86_400_000, "1h": 3_600_000}
 _COLUMNS = ("open", "high", "low", "close", "volume")

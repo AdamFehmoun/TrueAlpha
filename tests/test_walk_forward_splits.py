@@ -38,7 +38,7 @@ def test_union_of_test_windows_is_exactly_the_tail() -> None:
 
 @pytest.mark.parametrize(
     ("n_samples", "n_folds", "test_size"),
-    [(1096, 5, 0.2), (997, 7, 0.31), (100, 3, 0.25)],
+    [(1096, 5, 0.2), (3240, 5, 0.2), (997, 7, 0.31), (100, 3, 0.25)],
 )
 def test_indivisible_test_region_still_tiles_the_tail_with_balanced_windows(
     n_samples: int, n_folds: int, test_size: float
@@ -99,16 +99,28 @@ def test_single_fold_matches_the_single_forward_split_geometry() -> None:
     assert np.array_equal(wf.test, single.test)
 
 
-def test_the_m2_protocol_configuration_fits_1096_daily_bars() -> None:
-    """The exact configuration of the walk-forward evaluation: 1096 bars, 5 folds,
-    test_size 0.2, purge 200 (= slow_max), embargo 5. Pins the bar budget explicitly
-    instead of discovering it at evaluation time: 219 test bars from position 877,
-    672 train bars on fold 0."""
-    splits = walk_forward_splits(1096, n_folds=5, test_size=0.2, purge=200, embargo=5)
+@pytest.mark.parametrize(
+    ("n_samples", "first_train", "region_start", "test_sizes"),
+    [
+        # the ARCHIVED 2022-2024 geometry (results/archive/metrics-2022-2024.json
+        # stays published, so its bar budget stays pinned)
+        (1096, 672, 877, [43, 44, 44, 44, 44]),
+        # the CURRENT B4 geometry, 2017-08-17 -> 2026-06-30
+        (3240, 2387, 2592, [129, 130, 129, 130, 130]),
+    ],
+)
+def test_the_protocol_configuration_fits_both_published_geometries(
+    n_samples: int, first_train: int, region_start: int, test_sizes: list[int]
+) -> None:
+    """The exact walk-forward configuration (5 folds, test_size 0.2, purge 200
+    = slow_max, embargo 5), pinned on BOTH published geometries. Pins the bar
+    budget explicitly instead of discovering it at evaluation time."""
+    splits = walk_forward_splits(n_samples, n_folds=5, test_size=0.2, purge=200, embargo=5)
     assert len(splits) == 5
-    assert splits[0].train.size == 672
+    assert splits[0].train.size == first_train
     union = np.concatenate([s.test for s in splits])
-    assert np.array_equal(union, np.arange(877, 1096))
+    assert np.array_equal(union, np.arange(region_start, n_samples))
+    assert [len(s.test) for s in splits] == test_sizes
 
 
 def test_too_many_folds_raises_explicitly() -> None:
