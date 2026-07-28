@@ -380,3 +380,7 @@ has grown at every commit, so kill counts grow with it.
 v1.0 criteria and deadline (2026-08-31) live in
 [DEFINITION_OF_DONE.md](DEFINITION_OF_DONE.md). Backtest correctness before any
 sophistication; no ML until the guardrails are green end-to-end.
+The ten engineering rules that govern this project — with their dated amendments —
+live in [POSTMORTEM.md](POSTMORTEM.md).
+The debt ledger lives in [BACKLOG.md](BACKLOG.md): an overdue 🔴 item blocks
+feature commits exactly like a red CI.
