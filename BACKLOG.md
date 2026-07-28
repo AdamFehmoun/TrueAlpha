@@ -110,14 +110,6 @@ means the protocol is currently *decorative*. Either the grid must be wide
 enough that selection changes across folds, or the degeneracy must be stated as
 a finding rather than carried as a feature. Ties to B10.
 
-### B6 — GitHub Actions Node 20 deprecation
-**Rule 4.** **Due: 2026-07-31 — after the tag, deliberately.**
-
-`actions/checkout@v4` and `actions/setup-python@v5` raise a deprecation
-annotation on every run. Deferred until after `v1.0-foundation` so the tag lands
-on a tree whose CI has already been observed green six times; bumping first
-would mean tagging on an unproven workflow.
-
 ### B7 — Rule 1's "hors git" clause: amend it or comply with it
 **Rule 1 / Rule 7.** **Due: 2026-07-29 (commit 10).**
 
@@ -187,12 +179,46 @@ are unused.
 
 ---
 
+### 2026-07-28 — Ré-datation du backlog pour absence déclarée (02→08/08)
+Adam est en voyage du 2 au 8 août, capacité : un bloc pré-spécifié par soirée.
+Les échéances tombant dans cette fenêtre sont révisées AVANT de tomber :
+B2 02/08 → 04/08 · B1 03/08 → 05/08 · B3 05/08 → 07/08 · B5 10/08 → 12/08.
+B4 (empan) est AVANCÉ au 30/07 : il déplace tous les nombres publiés et exige
+un audit à froid, donc il se fait à portée de bureau, pas en voyage.
+B6 et B13 sont clos le 28/07, en avance.
+Motif : une date révisée à l'avance est une décision, une date manquée est une
+dérive. Règle 10.
+
+---
+
 ## Closed
+
+### B13 — The mutation audit could publish counts from a dirty base and die without restoring
+**Rule 5 / Rule 7.** **Opened and closed 2026-07-28 — the trace is worth the line.**
+
+The incident (provoked by the jury, logged): `scripts/mutation_audit.py` was
+launched with a 120 s timeout on a ~3 minute job. The SIGTERM killed it
+mid-flight LEAVING `engine/evaluate.py` MUTATED on disk; the next pytest
+produced 2 phantom failures, and the re-audit published FIVE inflated kill
+counts from the dirty base before catching itself on the first damaged anchor.
+Two defects, both in the instrument, none in the engine: (1) it started without
+verifying its base was clean; (2) it did not guarantee restoration when dying.
+
+The fix (D2): `assert_pristine_base` derives the target set from `MUTATIONS`,
+verifies each file is byte-identical to HEAD and refuses to print a single
+count otherwise; the whole mutation loop is wrapped in `try/finally` with
+SIGTERM/SIGINT handlers that restore the originals then re-raise; and the audit
+re-verifies every target's sha256 at the end — success or failure — printing
+`sources restored: OK` or failing loudly. Two targeted tests pin both defects
+(`tests/test_mutation_audit.py`); the restoration-despite-exception test is the
+one that would have caught the incident.
 
 | # | Item | Rule | Closed | Commit |
 |---|---|---|---|---|
 | — | Boundary calendar holes internal to a spliced window unchecked | 2 | 2026-07-27 | `4a044ac` (M12) |
 | — | Exit-fee bias asserted in prose but not computed | 3, 7 | 2026-07-27 | `4a044ac` |
 | — | Segment-level contiguity guard covered by no mutation | 5 | 2026-07-27 | `1b86c76` (M13) |
-| — | `POSTMORTEM.md` governing the repo from outside the repo | 7, 8 | 2026-07-27 | commit 10 |
-| — | No debt ledger with due dates (Rule 8's amended clause had nothing to operate on) | 8 | 2026-07-27 | commit 10 — this file |
+| — | `POSTMORTEM.md` governing the repo from outside the repo | 7, 8 | 2026-07-27 | commit 10 (`f59d284`) |
+| — | No debt ledger with due dates (Rule 8's amended clause had nothing to operate on) | 8 | 2026-07-27 | commit 10 (`f59d284`) — this file |
+| B6 | GitHub Actions Node 20 deprecation | 4 | 2026-07-28 | `0d567c0` (D1) — annotation list verified empty on run 30321961542 |
+| B13 | Mutation audit: dirty base accepted, no restoration guarantee on death | 5, 7 | 2026-07-28 | D2 — this commit |

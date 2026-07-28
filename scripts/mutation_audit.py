@@ -21,9 +21,13 @@ mutation table from the output:
 
 from __future__ import annotations
 
+import hashlib
+import signal
 import subprocess
 import sys
+from collections.abc import Sequence
 from pathlib import Path
+from types import FrameType
 
 REPO = Path(__file__).resolve().parent.parent
 EVAL = REPO / "engine" / "evaluate.py"
@@ -127,51 +131,122 @@ EXPECTED_SURVIVORS: dict[str, str] = {
 }
 
 
+def _sha256(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def assert_pristine_base(paths: Sequence[Path]) -> None:
+    """Refuse to audit from an unknown base (B13).
+
+    Every file this audit will mutate must be byte-identical to HEAD, checked
+    BEFORE any mutation is applied and before a single kill count is printed: a
+    count computed from a dirty base is a published number of unknown origin.
+    The incident this guards against: a timeout-killed run left the engine
+    mutated on disk, and the re-audit published five inflated counts from it.
+    """
+    rel = [str(path.relative_to(REPO)) for path in paths]
+    proc = subprocess.run(["git", "diff", "--quiet", "HEAD", "--", *rel], cwd=REPO, check=False)
+    if proc.returncode == 0:
+        return
+    names = subprocess.run(
+        ["git", "diff", "--name-only", "HEAD", "--", *rel],
+        cwd=REPO,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    dirty = ", ".join(names.stdout.split()) or ", ".join(rel)
+    print(
+        f"REFUSED: dirty audit base -- target file(s) differ from HEAD: {dirty}",
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+
+
 def main() -> int:
+    # the exact set of files this audit will mutate, derived from MUTATIONS --
+    # never a hard-coded list that could drift from the table
+    targets = sorted({path for _name, path, _old, _new in MUTATIONS}, key=str)
+    assert_pristine_base(targets)
+    baseline = {path: _sha256(path) for path in targets}
+    originals = {path: path.read_bytes() for path in targets}
+
+    def restore_all() -> None:
+        for path, data in originals.items():
+            path.write_bytes(data)
+
+    def on_signal(signum: int, _frame: FrameType | None) -> None:
+        # an audit that dies must leave the tree exactly as it found it (B13)
+        restore_all()
+        raise SystemExit(128 + signum)
+
+    previous_term = signal.signal(signal.SIGTERM, on_signal)
+    previous_int = signal.signal(signal.SIGINT, on_signal)
+
     failures = 0
-    for name, path, old, new in MUTATIONS:
-        src = path.read_text(encoding="utf-8")
-        if old not in src:
-            print(f"{name}: PATTERN NOT FOUND -- the audit is stale, fix it first", file=sys.stderr)
-            return 1
-        path.write_bytes(src.replace(old, new, 1).encode("utf-8"))
-        try:
-            proc = subprocess.run(
-                [sys.executable, "-m", "pytest", "-q", "-rfE", "--tb=no"],
-                cwd=REPO,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-            lines = proc.stdout.splitlines()
-            dead = [line for line in lines if line.startswith(("FAILED", "ERROR"))]
-            golden = [line for line in dead if "test_metrics_golden" in line]
-            targeted = [line for line in dead if "test_metrics_golden" not in line]
-            mutation_id = name.split(" ", 1)[0]
-            expected_survivor = mutation_id in EXPECTED_SURVIVORS
-            print(f"=== {name}")
-            print(f"    targeted kills: {len(targeted)}   golden kills: {len(golden)}")
-            for line in targeted:
-                print(f"      {line.split(' ', 1)[-1]}")
-            if not targeted and expected_survivor:
-                print(f"    ASSUMED survivor: {EXPECTED_SURVIVORS[mutation_id]}")
-            elif not targeted:
-                failures += 1
-                print("    !!! UNEXPECTED SURVIVOR (0 targeted kills): write the missing test !!!")
-            elif expected_survivor:
-                failures += 1
+    restoration_ok = False
+    try:
+        for name, path, old, new in MUTATIONS:
+            src = path.read_text(encoding="utf-8")
+            if old not in src:
                 print(
-                    "    !!! EXPECTED SURVIVOR NOW DIES: remove its stale entry from "
-                    "EXPECTED_SURVIVORS !!!"
+                    f"{name}: PATTERN NOT FOUND -- the audit is stale, fix it first",
+                    file=sys.stderr,
                 )
-        finally:
-            path.write_bytes(src.encode("utf-8"))
+                return 1
+            path.write_bytes(src.replace(old, new, 1).encode("utf-8"))
+            try:
+                proc = subprocess.run(
+                    [sys.executable, "-m", "pytest", "-q", "-rfE", "--tb=no"],
+                    cwd=REPO,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                lines = proc.stdout.splitlines()
+                dead = [line for line in lines if line.startswith(("FAILED", "ERROR"))]
+                golden = [line for line in dead if "test_metrics_golden" in line]
+                targeted = [line for line in dead if "test_metrics_golden" not in line]
+                mutation_id = name.split(" ", 1)[0]
+                expected_survivor = mutation_id in EXPECTED_SURVIVORS
+                print(f"=== {name}")
+                print(f"    targeted kills: {len(targeted)}   golden kills: {len(golden)}")
+                for line in targeted:
+                    print(f"      {line.split(' ', 1)[-1]}")
+                if not targeted and expected_survivor:
+                    print(f"    ASSUMED survivor: {EXPECTED_SURVIVORS[mutation_id]}")
+                elif not targeted:
+                    failures += 1
+                    print(
+                        "    !!! UNEXPECTED SURVIVOR (0 targeted kills): "
+                        "write the missing test !!!"
+                    )
+                elif expected_survivor:
+                    failures += 1
+                    print(
+                        "    !!! EXPECTED SURVIVOR NOW DIES: remove its stale entry from "
+                        "EXPECTED_SURVIVORS !!!"
+                    )
+            finally:
+                path.write_bytes(src.encode("utf-8"))
+    finally:
+        # unconditional: reached on success, on any exception, and on
+        # SIGTERM/SIGINT (whose handlers restore then re-raise as SystemExit)
+        restore_all()
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
+        mismatched = [str(path) for path in targets if _sha256(path) != baseline[path]]
+        if mismatched:
+            print(f"sources restored: FAILED for {', '.join(mismatched)}", file=sys.stderr)
+        else:
+            restoration_ok = True
+            print("sources restored: OK")
+    if not restoration_ok:
+        return 2
     if failures:
         print(f"{failures} audit failure(s) -- fix before trusting the table", file=sys.stderr)
         return 1
-    print(
-        "mutation audit clean (kills as expected, assumed survivors documented); sources restored"
-    )
+    print("mutation audit clean (kills as expected, assumed survivors documented)")
     return 0
 
 
