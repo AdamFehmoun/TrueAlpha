@@ -31,7 +31,8 @@ closing line is the reason this file is not decoration:
 
 ### B1 — Permuted-label leakage test, written before the model
 **Rule 2** (« Le test anti-leakage s'écrit AVANT le modèle »).
-**Due: 2026-08-03. Hard gate: no ML commit may land before this test is green.**
+**Due: 2026-08-05 (révisé le 28/07, voir « Ré-datation » ; date initiale
+2026-08-03). Hard gate: no ML commit may land before this test is green.**
 
 The split machinery is already guarded (`assert_no_leakage`, purge/embargo,
 per-fold and segment-level calendar + contiguity checks, all mutation-tested).
@@ -50,7 +51,8 @@ recur.
 ### B2 — Property-based tests on the engine invariants
 **Rule 5** (« Property-based tests sur les invariants … comme dans glicko2-ts —
 c'est ton meilleur pattern, applique-le au cœur »).
-**Due: 2026-08-02.**
+**Due: 2026-08-04 (révisé le 28/07, voir « Ré-datation » ; date initiale
+2026-08-02).**
 
 `hypothesis` appears in neither `requirements.txt` nor any test file. The suite
 is 160 example-based tests plus a 12-mutation audit — strong, but both methods
@@ -71,8 +73,9 @@ inputs nobody wrote down. They are complementary and only the first is in place.
 **Rule 3** (« Aucune métrique de modèle n'est présentable sans les baselines
 naïves dans le même tableau : classe majoritaire, buy-and-hold, momentum simple,
 AR(1) »).
-**Due: 2026-08-05. Hard gate: no model metric is published without it in the
-same table.**
+**Due: 2026-08-07 (révisé le 28/07, voir « Ré-datation » ; date initiale
+2026-08-05). Hard gate: no model metric is published without it in the same
+table.**
 
 The repo publishes two of the four named baselines: buy & hold
 (`strategies/buy_and_hold.py`) and MA 20/50 crossover
@@ -90,7 +93,8 @@ the cheapest thing that can explain away a claimed edge.
 ## 🟠 Due, not blocking
 
 ### B4 — Buy calendar span, not sampling frequency
-**Rule 1 / statistical power.** **Due: 2026-08-10.**
+**Rule 1 / statistical power.** **Due: 2026-07-30 (AVANCÉ, révisé le 28/07,
+voir « Ré-datation » ; date initiale 2026-08-10).**
 
 `SE(Sharpe_ann) ≈ 1/√(years)` depends on the calendar span alone, not on the
 number of bars. The 219 out-of-sample daily bars are 0.600 yr, so the smallest
@@ -100,7 +104,8 @@ floor to **1.63**. Going to 1h bars over the same span does *not* help, and the
 1h series already in `manifest.json` must not be mistaken for added power.
 
 ### B5 — Re-selection must actually bite
-**Rule 6 / walk-forward validity.** **Due: 2026-08-10.**
+**Rule 6 / walk-forward validity.** **Due: 2026-08-12 (révisé le 28/07, voir
+« Ré-datation » ; date initiale 2026-08-10).**
 
 `results/metrics.json` reports `n_segments: 1` on all four published runs: the
 parameter grid selects the same point on every fold, so the 20 folds splice into
@@ -110,21 +115,6 @@ means the protocol is currently *decorative*. Either the grid must be wide
 enough that selection changes across folds, or the degeneracy must be stated as
 a finding rather than carried as a feature. Ties to B10.
 
-### B7 — Rule 1's "hors git" clause: amend it or comply with it
-**Rule 1 / Rule 7.** **Due: 2026-07-29 (commit 10).**
-
-Rule 1 says the data is stored "en parquet avec un manifest … **hors git ou en
-DVC**". The four parquet files *are* committed (2.44 MB; `.git` pack = 1.99 MB).
-The rule's intent — from pattern A.8, the 77 MB dataset committed to TrueSight —
-is not violated at this size, and committing them arguably *strengthens* Rule
-1's acceptance test, since `git clone` plus one command reproduces the published
-numbers with no external fetch. But the rule as written says otherwise, and Rule
-7 forbids leaving a claim unverified.
-
-So: amend the clause in writing with a size threshold and the justification, or
-move the data out. **A silent deviation is the one option that is not
-available.**
-
 ### B8 — Monthly README prose review
 **Rule 7** (« Revue mensuelle obligatoire : chaque phrase du README est soit
 vérifiée contre le code, soit supprimée »). **First: 2026-08-01, then monthly.**
@@ -133,6 +123,20 @@ The *numeric* half of Rule 7 is mechanically enforced:
 `python -m scripts.generate_results --check` fails CI when a published figure
 diverges from `results/metrics.json`. The *prose* half has no enforcement and no
 schedule — and eight projects out of eight failed on prose, not on figures.
+
+### B14 — The README mutation table is hand-written and tied to nothing
+**Rule 7.** **Due: 2026-07-31.**
+
+`generate_results.py` states "numbers are never written by hand", yet the
+mutation table in the README is transcribed by hand from the audit output, and
+no check ties the two together: the kill counts can drift silently the day the
+suite grows (it has grown at every commit). Proposal — to write, deliberately
+not implemented in the commit that opens this item:
+`python -m scripts.mutation_audit --check` re-runs the audit, renders its own
+table, compares it to the README's mutation block, and exits 1 on any drift —
+the same contract `generate_results --check` already enforces for the results.
+
+*Opened 2026-07-28 (B4-A block).*
 
 ---
 
@@ -176,6 +180,21 @@ where the UI button existed and the pipeline was never called.
 
 **Turns 🔴 if** any 1h figure is published, or if the README stops saying they
 are unused.
+
+### B15 — Family-wise error: the tested-hypotheses counter stands at 2
+The B4 span extension is the SECOND test of the same hypothesis — "the MA
+crossover family has an edge" — on overlapping data: 2022-2024 published, then
+~2017-2026 pre-registered (README, section B4). Every additional test of the
+family inflates the probability that one of them clears a significance bar by
+luck; at this scale the honest mitigation is to count and say it.
+**Counter: 2.** Increment it in this entry with every new run testing the same
+family, and cite it next to any significance claim.
+
+**Turns 🔴 if** a significance claim is ever published without the family
+count, or if the counter passes 5 without a formal multiple-comparisons
+correction (deflated Sharpe ratio / Bonferroni) entering the protocol.
+
+*Opened 2026-07-28 (B4-A block).*
 
 ---
 
@@ -221,4 +240,5 @@ one that would have caught the incident.
 | — | `POSTMORTEM.md` governing the repo from outside the repo | 7, 8 | 2026-07-27 | commit 10 (`f59d284`) |
 | — | No debt ledger with due dates (Rule 8's amended clause had nothing to operate on) | 8 | 2026-07-27 | commit 10 (`f59d284`) — this file |
 | B6 | GitHub Actions Node 20 deprecation | 4 | 2026-07-28 | `0d567c0` (D1) — annotation list verified empty on run 30321961542 |
-| B13 | Mutation audit: dirty base accepted, no restoration guarantee on death | 5, 7 | 2026-07-28 | D2 — this commit |
+| B13 | Mutation audit: dirty base accepted, no restoration guarantee on death | 5, 7 | 2026-07-28 | `9f8c0ea` (D2) |
+| B7 | Rule 1's "hors git" clause: amended in writing (50 MB threshold), not silently deviated from | 1, 7 | 2026-07-27 | commit 10 (`f59d284`) — AMENDEMENTS section of POSTMORTEM.md |

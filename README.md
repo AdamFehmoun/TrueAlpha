@@ -158,6 +158,35 @@ unwritten, the convention becomes a degree of freedom. This is the same rule as
 "the anti-leakage validator is written before the model", not a presentation
 preference.
 
+### Pre-registration — span extension B4 (written 2026-07-28, before any new number)
+
+Probed live on Binance, not assumed: the first daily candle served is
+**2017-08-17T00:00:00Z for BTC/USDT and for ETH/USDT alike**
+(`fetch_ohlcv(symbol, '1d', since=0, limit=1)`). Bounds for the B4 re-run,
+written before `data/download.py` changes:
+
+- **START = 2017-08-17T00:00:00Z** (max of the two first candles; already
+  midnight UTC, no rounding needed) · **END(1d) = 2026-06-30T00:00:00Z** ·
+  **END(1h) = 2026-06-30T23:00:00Z** — last complete month, absolute literals,
+  never computed at run time.
+- Expected, all computed BEFORE the run: **3,240 daily bars** per symbol
+  (2017-08-17 → 2026-06-30 inclusive) · OOS region = round(3240 × 0.2) =
+  **648 bars = 1.774 yr** · Lo SE ≈ 1/√1.774 = **0.75** · smallest annualized
+  Sharpe detectable at |t| > 2 = 2/√1.774 = **1.50**.
+- **What does NOT change, by name:** test_size 0.2 · 5 folds · purge 200 ·
+  embargo 5 · the declared 13-combo grid · costs 10 bp · anchored + rolling ·
+  signal at close[t], fill at open[t+1]. B4 changes the sample and NOTHING else.
+- **Three falsifiable predictions:** (a) |t| < 2 on every published OOS Sharpe,
+  repo bar-count convention; (b) **n_segments > 1 on at least one of the 4
+  runs** (symbol × config) — the 20/20 degeneracy on 5/200 must break on ~9
+  years containing 2017, 2018, 2020 and 2021; if it survives that, the problem
+  is the GRID, not the sample, and B5 changes nature; (c) exit-fee bias =
+  (1 + total_return) × cost_rate × |p_out| to < 1e-10 bp, re-validated on a
+  completely different sample.
+- The sentence missing everywhere else: **this is the second test of the same
+  hypothesis on overlapping data** (family counter: see BACKLOG B15). The
+  2022-2024 result stays published as-is, unamended.
+
 **Correction note (added 2026-07-26 — the original text above is kept verbatim;
 history is not rewritten):** measured against the 219-bar OOS error bar
 (SE(Sharpe) ≈ 1/√0.600 years = 1.29, Lo 2002), the pre-registered range

@@ -64,6 +64,19 @@ def test_sources_restored_even_when_the_suite_invocation_raises(
     targets = _audit_targets()
     before = {path: path.read_bytes() for path in targets}
 
+    # R4: run the audit over ONE synthetic mutation whose anchor no real mutation
+    # consumes. With the real MUTATIONS table, running under audit mutation M1
+    # finds M1's anchor already consumed -> PATTERN NOT FOUND -> return 1 -> the
+    # RuntimeError never fires and this test dies by SELF-REFERENCE, not by
+    # detection (and only ever exercises the table's first entry).
+    anchor = "from __future__ import annotations"
+    assert mutation_audit.EVAL.read_text(encoding="utf-8").count(anchor) == 1, (
+        "the synthetic anchor must appear EXACTLY once in engine/evaluate.py; "
+        "anything else silently turns this test into the no-op it exists to prevent"
+    )
+    synthetic = [("R4 synthetic mutation", mutation_audit.EVAL, anchor, anchor + "  # mutated")]
+    monkeypatch.setattr(mutation_audit, "MUTATIONS", synthetic)
+
     monkeypatch.setattr(mutation_audit, "assert_pristine_base", lambda paths: None)
 
     def exploding_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
