@@ -185,7 +185,15 @@ written before `data/download.py` changes:
   completely different sample.
 - The sentence missing everywhere else: **this is the second test of the same
   hypothesis on overlapping data** (family counter: see BACKLOG B15). The
-  2022-2024 result stays published as-is, unamended.
+  2022-2024 result stays published as-is, unamended — frozen as an artifact in
+  [`results/archive/metrics-2022-2024.json`](results/archive/metrics-2022-2024.json).
+- **(d) Slice reproducibility (amendment, added 2026-07-28 — before the
+  download exists):** the new 2017-08-17 → 2026-06-30 download contains
+  2022-01-01 → 2024-12-31 as an exact subset. Sliced to that window and run
+  through the engine, it must reproduce the published OOS Sharpes **to the last
+  published digit**. A deviation means either Binance restated its history, or
+  a result depends on the extent of the frame around it — in both cases a
+  defect that outranks B4.
 
 **Correction note (added 2026-07-26 — the original text above is kept verbatim;
 history is not rewritten):** measured against the 219-bar OOS error bar
@@ -311,6 +319,9 @@ tests/        the guardrails; written before any strategy sophistication
 scripts/      generate_results.py — the only source of numbers in this README
 results/      metrics.json — the golden numbers file (full float precision),
               asserted byte-for-byte in CI, zero tolerance
+              archive/metrics-2022-2024.json — the 2022-2024 golden, FROZEN at
+              the B4 span extension: "stays published as-is" held by an
+              artifact, not only by git history; never regenerated
 notebooks/    exploration only; nothing in a notebook is a result
 ```
 
