@@ -218,8 +218,7 @@ def main() -> int:
                 elif not targeted:
                     failures += 1
                     print(
-                        "    !!! UNEXPECTED SURVIVOR (0 targeted kills): "
-                        "write the missing test !!!"
+                        "    !!! UNEXPECTED SURVIVOR (0 targeted kills): write the missing test !!!"
                     )
                 elif expected_survivor:
                     failures += 1

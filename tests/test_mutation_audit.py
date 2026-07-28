@@ -41,7 +41,9 @@ def test_dirty_base_is_refused_before_any_kill_count(
             return subprocess.CompletedProcess(cmd, 0, stdout="engine/evaluate.py\n", stderr="")
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
-    monkeypatch.setattr(mutation_audit.subprocess, "run", fake_run)
+    # mutation_audit does `import subprocess`, so patching the module's `run`
+    # globally is exactly what its calls will see
+    monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(SystemExit) as excinfo:
         mutation_audit.main()
     assert excinfo.value.code == 1
@@ -67,7 +69,7 @@ def test_sources_restored_even_when_the_suite_invocation_raises(
     def exploding_run(cmd: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
         raise RuntimeError("suite invocation killed mid-audit")
 
-    monkeypatch.setattr(mutation_audit.subprocess, "run", exploding_run)
+    monkeypatch.setattr(subprocess, "run", exploding_run)
     with pytest.raises(RuntimeError, match="killed mid-audit"):
         mutation_audit.main()
 
