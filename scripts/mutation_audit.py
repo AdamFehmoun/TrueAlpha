@@ -250,14 +250,19 @@ def assert_pristine_base(paths: Sequence[Path]) -> None:
     raise SystemExit(1)
 
 
-def main() -> int:
+def main(argv: Sequence[str] | None = None) -> int:
+    # argv is injectable: parse_args() on the GLOBAL sys.argv made main()'s
+    # behavior depend on the caller's command line -- under the audit itself,
+    # pytest's own flags (-q -rfE --tb=no) leaked in and argparse exited 2,
+    # killing the two main()-calling tests under EVERY mutation. Caught by the
+    # audit's first run on its own new code.
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--check",
         action="store_true",
         help="re-run the campaign and fail if the README mutation table differs",
     )
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     # the exact set of files this audit will mutate, derived from MUTATIONS --
     # never a hard-coded list that could drift from the table

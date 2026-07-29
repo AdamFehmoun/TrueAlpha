@@ -45,7 +45,7 @@ def test_dirty_base_is_refused_before_any_kill_count(
     # globally is exactly what its calls will see
     monkeypatch.setattr(subprocess, "run", fake_run)
     with pytest.raises(SystemExit) as excinfo:
-        mutation_audit.main()
+        mutation_audit.main([])  # argv injected: pytest's own flags must not leak in
     assert excinfo.value.code == 1
     captured = capsys.readouterr()
     assert "targeted kills" not in captured.out  # ZERO kill counts printed
@@ -118,7 +118,7 @@ def test_sources_restored_even_when_the_suite_invocation_raises(
 
     monkeypatch.setattr(subprocess, "run", exploding_run)
     with pytest.raises(RuntimeError, match="killed mid-audit"):
-        mutation_audit.main()
+        mutation_audit.main([])  # argv injected: pytest's own flags must not leak in
 
     after = {path: path.read_bytes() for path in targets}
     assert after == before  # byte-identical, i.e. sha256-identical
