@@ -12,15 +12,22 @@ must be written (the non-adjacent-splice test and the non-causal-factory truncat
 test were both born exactly this way, from surviving M7 and M8). An expected
 survivor that starts dying also fails the audit: its entry has gone stale.
 
-Not CI-enforced: it reruns the full suite once per mutation (a few minutes). Rerun
-after any change to engine/evaluate.py or engine/splits.py, and update the README's
-mutation table from the output:
+The README's mutation table is a GENERATED block between MUTATION markers -- the
+same contract as ``generate_results`` (B14): the default invocation re-runs the
+campaign and splices the measured table into the README; ``--check`` re-runs it
+and exits non-zero with a readable diff if the committed table differs
+byte-for-byte. Sources are restored in every mode, success or failure. Enforced
+by the weekly ``mutation-audit.yml`` workflow (plus manual dispatch), not on
+every push: the campaign reruns the full suite once per mutation.
 
-    python -m scripts.mutation_audit
+    python -m scripts.mutation_audit          # regenerate the README table
+    python -m scripts.mutation_audit --check  # fail on any drift (weekly CI)
 """
 
 from __future__ import annotations
 
+import argparse
+import difflib
 import hashlib
 import signal
 import subprocess
@@ -32,6 +39,28 @@ from types import FrameType
 REPO = Path(__file__).resolve().parent.parent
 EVAL = REPO / "engine" / "evaluate.py"
 SPLITS = REPO / "engine" / "splits.py"
+README_PATH = REPO / "README.md"
+MUT_BEGIN = "<!-- MUTATION:BEGIN -->"
+MUT_END = "<!-- MUTATION:END -->"
+
+# README display labels per mutation id -- the table between the MUTATION markers
+# is GENERATED from the measured outcomes (B14): a hand-transcribed table is
+# correct by luck and care only, until the run that contradicts it.
+README_LABELS: dict[str, str] = {
+    "M1": "**argmax selects on TEST instead of TRAIN (the central invariant)**",
+    "M2": "fold measurement uses TRAIN instead of TEST",
+    "M3": "purge/embargo silently zeroed in `walk_forward_splits`",
+    "M4": "unlagged positions: fold windows see one bar of future",
+    "M5": "`assert_no_leakage` removed from the pipeline",
+    "M6": "splice reset removed: position carried across a parameter change",
+    "M7": "splice contiguity removed: non-adjacent windows glued",
+    "M8": "history truncation removed: the factory is shown the future",
+    "M9": "positional gapped-window rejection disabled",
+    "M10": "chronological `all_test` check removed",
+    "M12": "union calendar re-validation removed at segment level",
+    "M13": "segment-level positional contiguity assertion disabled",
+}
+BOLD_ROWS = frozenset({"M1"})
 
 MUTATIONS: list[tuple[str, Path, str, str]] = [
     (
@@ -131,6 +160,64 @@ EXPECTED_SURVIVORS: dict[str, str] = {
 }
 
 
+def render_table(outcomes: Sequence[tuple[str, int, int, bool]]) -> str:
+    """Render the README mutation-table block from MEASURED outcomes.
+
+    Same contract as ``generate_results``: the table is generated, never
+    hand-written. Each outcome is (mutation id, targeted kills, golden kills,
+    expected-survivor flag).
+    """
+    lines = [
+        MUT_BEGIN,
+        "| # | Deliberate sabotage | Targeted kills | Golden kills |",
+        "|---|---|---|---|",
+    ]
+    for mutation_id, targeted, golden, assumed in outcomes:
+        label = README_LABELS[mutation_id]
+        if assumed and targeted == 0:
+            targeted_cell = "0 — **declared survivor**"
+        elif mutation_id in BOLD_ROWS:
+            targeted_cell = f"**{targeted}**"
+        else:
+            targeted_cell = str(targeted)
+        golden_cell = f"**{golden}**" if mutation_id in BOLD_ROWS else str(golden)
+        lines.append(f"| {mutation_id} | {label} | {targeted_cell} | {golden_cell} |")
+    lines.append(MUT_END)
+    return "\n".join(lines)
+
+
+def readme_table_check(rendered: str, readme_bytes: bytes) -> int:
+    """Byte-compare the rendered table block against the committed README block.
+
+    0 if identical; 1 with a readable unified diff otherwise -- the exact
+    contract of ``generate_results --check``, applied to the mutation table.
+    """
+    readme = readme_bytes.decode("utf-8")
+    if MUT_BEGIN not in readme or MUT_END not in readme:
+        print(f"ERROR: {MUT_BEGIN} … {MUT_END} markers not found in README.md", file=sys.stderr)
+        return 1
+    begin = readme.index(MUT_BEGIN)
+    end = readme.index(MUT_END) + len(MUT_END)
+    committed = readme[begin:end]
+    if committed.encode("utf-8") == rendered.encode("utf-8"):
+        print("README mutation table is in sync with the measured audit.")
+        return 0
+    print(
+        "ERROR: README mutation table is out of sync with the measured audit:",
+        file=sys.stderr,
+    )
+    for line in difflib.unified_diff(
+        committed.splitlines(),
+        rendered.splitlines(),
+        "README (committed)",
+        "audit (measured)",
+        lineterm="",
+    ):
+        print(f"  {line}", file=sys.stderr)
+    print("Run `python -m scripts.mutation_audit` and commit the diff.", file=sys.stderr)
+    return 1
+
+
 def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
@@ -164,6 +251,14 @@ def assert_pristine_base(paths: Sequence[Path]) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="re-run the campaign and fail if the README mutation table differs",
+    )
+    args = parser.parse_args()
+
     # the exact set of files this audit will mutate, derived from MUTATIONS --
     # never a hard-coded list that could drift from the table
     targets = sorted({path for _name, path, _old, _new in MUTATIONS}, key=str)
@@ -185,6 +280,7 @@ def main() -> int:
 
     failures = 0
     restoration_ok = False
+    outcomes: list[tuple[str, int, int, bool]] = []
     try:
         for name, path, old, new in MUTATIONS:
             src = path.read_text(encoding="utf-8")
@@ -209,6 +305,7 @@ def main() -> int:
                 targeted = [line for line in dead if "test_metrics_golden" not in line]
                 mutation_id = name.split(" ", 1)[0]
                 expected_survivor = mutation_id in EXPECTED_SURVIVORS
+                outcomes.append((mutation_id, len(targeted), len(golden), expected_survivor))
                 print(f"=== {name}")
                 print(f"    targeted kills: {len(targeted)}   golden kills: {len(golden)}")
                 for line in targeted:
@@ -245,6 +342,26 @@ def main() -> int:
     if failures:
         print(f"{failures} audit failure(s) -- fix before trusting the table", file=sys.stderr)
         return 1
+
+    rendered = render_table(outcomes)
+    readme_bytes = README_PATH.read_bytes()
+    if args.check:
+        table_code = readme_table_check(rendered, readme_bytes)
+        if table_code != 0:
+            return table_code
+    else:
+        readme = readme_bytes.decode("utf-8")
+        if MUT_BEGIN not in readme or MUT_END not in readme:
+            print(
+                f"ERROR: {MUT_BEGIN} … {MUT_END} markers not found in README.md",
+                file=sys.stderr,
+            )
+            return 1
+        begin = readme.index(MUT_BEGIN)
+        end = readme.index(MUT_END) + len(MUT_END)
+        README_PATH.write_bytes((readme[:begin] + rendered + readme[end:]).encode("utf-8"))
+        print("README mutation table regenerated from the measured outcomes.")
+
     print("mutation audit clean (kills as expected, assumed survivors documented)")
     return 0
 

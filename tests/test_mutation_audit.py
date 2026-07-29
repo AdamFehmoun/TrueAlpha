@@ -53,6 +53,40 @@ def test_dirty_base_is_refused_before_any_kill_count(
     assert "engine/evaluate.py" in captured.err  # the dirty file is NAMED
 
 
+def test_tampered_readme_mutation_table_fails_the_check() -> None:
+    """B14's bite, demanded explicitly: a hand-edited kill count in the README's
+    mutation table must fail `mutation_audit --check`. Without this test the
+    check is an untested guard, i.e. a sentence. Two assertions: (1) round-trip
+    -- outcomes parsed back from the committed block re-render to the identical
+    bytes, pinning the renderer against the committed table without re-running
+    the campaign; (2) a single tampered digit is caught with a non-zero exit."""
+    readme_bytes = mutation_audit.README_PATH.read_bytes()
+    readme = readme_bytes.decode("utf-8")
+    begin = readme.index(mutation_audit.MUT_BEGIN)
+    end = readme.index(mutation_audit.MUT_END) + len(mutation_audit.MUT_END)
+    committed = readme[begin:end]
+
+    outcomes: list[tuple[str, int, int, bool]] = []
+    for line in committed.splitlines():
+        if not line.startswith("| M"):
+            continue
+        cells = [cell.strip() for cell in line.split("|")[1:-1]]
+        mutation_id = cells[0]
+        assumed = "declared survivor" in cells[2]
+        targeted = int(cells[2].split(" ")[0].strip("*"))
+        golden = int(cells[3].strip("*"))
+        outcomes.append((mutation_id, targeted, golden, assumed))
+    assert len(outcomes) == len(mutation_audit.MUTATIONS)  # one row per mutation
+
+    rendered = mutation_audit.render_table(outcomes)
+    assert rendered.encode("utf-8") == committed.encode("utf-8")  # round-trip, exact
+    assert mutation_audit.readme_table_check(rendered, readme_bytes) == 0
+
+    tampered = readme_bytes.replace(b"| 16 |", b"| 99 |", 1)
+    assert tampered != readme_bytes  # the tampering really landed on a count
+    assert mutation_audit.readme_table_check(rendered, tampered) == 1
+
+
 def test_sources_restored_even_when_the_suite_invocation_raises(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -88,6 +88,12 @@ PREREG_SHARPE_HI = 0.4
 PREREG_TSTAT_MAX = 1.0
 PREREG_ALARM_SHARPE = 1.0
 
+# family-wise error counter (BACKLOG B15, arbitrated 2026-07-28): number of tests
+# of the "MA crossover family has an edge" hypothesis; increments at
+# PRE-REGISTRATION of a new test, not at execution. Pinned to the B15 entry by
+# test; interpolated into every generated significance line, never hand-written.
+FAMILY_TESTS_COUNT: Final = 2
+
 
 @dataclass(frozen=True)
 class Computed:
@@ -226,7 +232,10 @@ def _notes(rows: list[dict[str, Any]]) -> list[str]:
             )
             notes.append(
                 f"**Significance:** |t-stat| ≥ 2 for: {significant}. "
-                "All other rows are not statistically distinguishable from zero."
+                "All other rows are not statistically distinguishable from zero. "
+                "In-sample, descriptive, not used to conclude; family counter: "
+                f"{FAMILY_TESTS_COUNT} tested hypotheses of the MA-crossover family "
+                "(BACKLOG B15)."
             )
     for r in rows:
         if math.isfinite(r["sharpe"]) and r["sharpe"] > 0.0 and r["total_return"] < 0.0:
@@ -451,6 +460,36 @@ def _unbilled_exits(result: WalkForwardResult) -> tuple[int, int, float]:
     return param_change_exits, terminal_exits, abs(final_position)
 
 
+def _timing_note(result: WalkForwardResult, param_exits: int, terminal_exits: int) -> str:
+    """The re-billing timing clause, COMPUTED from the run -- never asserted.
+
+    B14's lesson: a hard-coded 'this case does not occur' clause survived the run
+    that made it false, three clauses away from the engine-computed numbers that
+    contradicted it. Any sentence stating a fact about the run is interpolated
+    from the same counters as metrics.json, or it does not exist.
+    """
+    if result.n_uncharged_exits == 0:
+        return (
+            "Method note: no uncharged exit on this run, so the re-billing timing "
+            "convention has no effect here."
+        )
+    if param_exits > 0:
+        plural = "s" if param_exits > 1 else ""
+        return (
+            f"Method note: the timing question BITES on this run — {param_exits} "
+            f"uncharged exit{plural} at a parameter-change boundary, effect "
+            f"{result.exit_fee_bias_bps:+.4f} bp, re-billed at the LAST bar of the "
+            "outgoing segment where a continuous book would bill it at the FIRST "
+            "bar of the next segment: exact in amount, one bar off in timing "
+            "(B10 tracks the convention)."
+        )
+    return (
+        f"Method note: the {terminal_exits} uncharged exit(s) are terminal (the OOS "
+        "end), re-billed at the last bar — exact in amount, one bar off in timing, "
+        f"effect {result.exit_fee_bias_bps:+.4f} bp."
+    )
+
+
 def _exit_fee_note(result: WalkForwardResult) -> str:
     """Known bias: the unbilled FEE and its exact effect on total_return, kept apart."""
     param_exits, terminal_exits, final_abs = _unbilled_exits(result)
@@ -466,15 +505,14 @@ def _exit_fee_note(result: WalkForwardResult) -> str:
         "is smaller, because equity has already moved when the exit occurs: "
         "re-billing the missing exit(s) and recompounding gives "
         f"**{result.exit_fee_bias_bps:+.4f} bp** on this run "
-        "(`exit_fee_bias_bps`, engine-computed; for a single segment with terminal "
-        "exit it equals `(1 + total_return) × cost_rate`). This run: "
+        "(`exit_fee_bias_bps`, engine-computed; for a single uncharged exit with "
+        "`|p| = 1` it equals `(1 + total_return) × cost_rate` wherever the exit "
+        "sits, the (1 − c) factor being commutative in the product). This run: "
         f"{result.n_segments} segment(s), {result.n_uncharged_exits} uncharged "
         f"exit(s) ({param_exits} at parameter-change boundaries, {terminal_exits} at "
-        f"the OOS end, final position {final_abs:.1f}). Method note: the exit is "
-        "re-billed at the LAST bar of its segment, where a continuous book would "
-        "bill it at the FIRST bar of the next segment — exact in amount, one bar "
-        "off in timing; without effect today (single segment, terminal exit), to "
-        "revisit if M3 produces multiple segments. The full-sample baselines share "
+        f"the OOS end, final position {final_abs:.1f}). "
+        + _timing_note(result, param_exits, terminal_exits)
+        + " The full-sample baselines share "
         "the same convention (the buy-and-hold identity is 'gross return net of the "
         "single entry fee'). The engine is deliberately unchanged: a different fee "
         "convention would move every published figure."

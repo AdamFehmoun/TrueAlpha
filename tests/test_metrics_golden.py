@@ -27,6 +27,7 @@ from engine.metrics import calendar_bars_per_year
 from engine.splits import walk_forward_splits
 from scripts.generate_results import (
     CONFIG,
+    FAMILY_TESTS_COUNT,
     METRICS_PATH,
     PREREG_ALARM_SHARPE,
     PREREG_SHARPE_HI,
@@ -138,6 +139,19 @@ def test_golden_metrics_pins_all_data_hashes() -> None:
         for timeframe in ("1d", "1h"):
             sha = payload["data"][symbol][timeframe]["sha256"]
             assert isinstance(sha, str) and len(sha) == 64
+
+
+def test_family_counter_is_pinned_to_the_backlog_entry() -> None:
+    """B15's arbitration (2026-07-28): the generator interpolates the family-wise
+    counter into every generated significance line; its source of truth is the
+    B15 ledger entry. Pinned both ways -- the constant must match the entry, and
+    the README's generated line must carry the counter with its in-sample
+    disclaimer."""
+    backlog = (README_PATH.parent / "BACKLOG.md").read_bytes().decode("utf-8")
+    assert f"**Counter: {FAMILY_TESTS_COUNT} — both executed.**" in backlog
+    readme = README_PATH.read_bytes().decode("utf-8")
+    assert f"family counter: {FAMILY_TESTS_COUNT} tested hypotheses" in readme
+    assert "In-sample, descriptive, not used to conclude" in readme
 
 
 def test_prereg_constants_match_the_dated_readme_prose() -> None:

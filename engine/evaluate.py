@@ -33,9 +33,12 @@ mark of a continuously held position); each fold's reported equity restarts at 1
 A segment's outgoing position at a parameter change is NOT charged an exit fee:
 the engine never bills terminal liquidation (the same convention that makes the
 buy-and-hold identity "gross return net of the single entry fee"), so across such
-a boundary the positions series can step to 0 with no turnover entry. On the
-published runs this case never occurs -- the selection retains the same
-parameters on every fold.
+a boundary the positions series can step to 0 with no turnover entry. This case
+DOES occur on the published runs since ``9a7fd1c`` (B4-B): BTC/USDT rolling
+selects 5/50 on fold 1 and 5/100 on folds 2-5, so the boundary carries an
+outgoing position of 1.0 that is never charged an exit fee.
+``exit_fee_bias_bps`` quantifies it exactly (12.3939 bps there); B10 tracks the
+timing convention.
 
 ``assert_no_leakage`` runs INSIDE this pipeline for every fold -- not only in tests.
 DoD criterion 4 demands that a strategy evaluation PASS the validator, not merely

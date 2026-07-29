@@ -96,14 +96,27 @@ the cheapest thing that can explain away a claimed edge.
 segment; a continuous book would bill it at the **first** bar of the next
 segment. Exact in amount, one bar off in timing. The written trigger — "turns 🔴
 the moment `n_segments > 1`" — fired at the B4-B run: BTC rolling has
-`n_segments = 2`. Mitigating fact, stated precisely: the observed segment
-boundary (fold 1→2, the 5/50 → 5/100 parameter change) carries an outgoing
-position of **0.0**, so there is no unbilled boundary exit and the timing
-question has zero monetary effect on the published figures today — the only
-uncharged exit remains the terminal one. The item is blocking because the next
-run with a non-zero outgoing position at a parameter change will make the
-one-bar timing approximation a real number, and the treatment must be decided
-before that happens, not after.
+`n_segments = 2`.
+
+**Fait mesuré au run `9a7fd1c` (audit jury n°11), correction datée 2026-07-28 —
+la phrase qu'elle remplace affirmait ici une position sortante de 0.0, « sans
+effet monétaire », avec pour seule sortie non facturée la terminale : les trois
+clauses étaient fausses.** La position sortante à la frontière fold 1→2 vaut
+**1.0**, pas 0.0. Le changement 5/50 → 5/100 liquide un long vivant sans
+facturer la sortie : c'est **l'unique** sortie non facturée du run, et elle vaut
+**12.3939 bps** sur un rendement total de **+23.94 %**. La position finale au
+2026-06-30 vaut 0.0, donc **il n'y a pas de sortie terminale non facturée** —
+l'inverse exact de ce qui était écrit ici. *Cause de l'erreur, consignée :
+confusion entre « le segment entrant démarre à plat (0.0) » — tautologie vraie à
+chaque début de segment, donc mitigeant rien — et « la position sortante vaut
+0.0 » ; aggravée par un contrôle en forme close incapable de distinguer une
+sortie de frontière d'une sortie terminale (le facteur (1−c) est commutatif dans
+le produit), alors que le README généré imprimait déjà la vérité : « 1 at
+parameter-change boundaries, 0 at the OOS end ».*
+
+The item is blocking because the timing approximation is now a real, live case
+(a boundary exit re-billed one bar early), and the treatment must be decided at
+the due date, not after the next occurrence.
 
 ---
 
@@ -138,29 +151,20 @@ The *numeric* half of Rule 7 is mechanically enforced:
 diverges from `results/metrics.json`. The *prose* half has no enforcement and no
 schedule — and eight projects out of eight failed on prose, not on figures.
 
-### B14 — The README mutation table is hand-written and tied to nothing
-**Rule 7.** **Due: 2026-07-31.**
-
-`generate_results.py` states "numbers are never written by hand", yet the
-mutation table in the README is transcribed by hand from the audit output, and
-no check ties the two together: the kill counts can drift silently the day the
-suite grows (it has grown at every commit). Proposal — to write, deliberately
-not implemented in the commit that opens this item:
-`python -m scripts.mutation_audit --check` re-runs the audit, renders its own
-table, compares it to the README's mutation block, and exits 1 on any drift —
-the same contract `generate_results --check` already enforces for the results.
-
-*Opened 2026-07-28 (B4-A block).*
-
 ---
 
 ## 🟢 Declared and accepted
 
-### B9 — The mutation audit is not CI-enforced
-It reruns the whole suite once per mutation (12 × ~11 s today) and is invoked by
-hand: `python -m scripts.mutation_audit`. Accepted because the audit is a
-periodic instrument, not a per-commit gate, and because it exits 1 on any
-deviation so it cannot pass silently when run.
+### B9 — The mutation audit is not per-push CI-enforced
+It reruns the whole suite once per mutation (12 × ~18 s on the 3,240-bar
+sample, ~5-7 minutes end to end — figures refreshed 2026-07-28). Since B14
+closed, `python -m scripts.mutation_audit --check` verifies the README's
+generated mutation table byte-for-byte and is enforced by the **weekly
+`mutation-audit.yml` workflow** (plus manual dispatch) — but still not on every
+push, which is why this entry stays open: a weekly gate is weaker than a
+per-push gate and the README says so. Accepted because the audit is a periodic
+instrument, not a per-commit gate, and because it exits 1 on any deviation so
+it cannot pass silently when run.
 
 **Turns 🔴 if** the suite gets fast enough to run it per-commit, or if a
 mutation table entry is ever found stale in an audit.
@@ -201,9 +205,26 @@ when it is executed — executing pre-registered test n°2 does not create a tes
 n°3, and incrementing at execution would double-count every future
 pre-registered run. Cite the counter next to any significance claim.
 
-**Turns 🔴 if** a significance claim is ever published without the family
-count, or if the counter passes 5 without a formal multiple-comparisons
-correction (deflated Sharpe ratio / Bonferroni) entering the protocol.
+**Arbitrage 2026-07-28 (bloc B14) — le déclencheur a sauté et il est arbitré
+par écrit, pas laissé décoratif.** At the B4-B run the full-sample t-stats
+crossed 2 and the generator's "Significance:" line cited the MA-crossover
+family at t = 2.51 and t = 2.69 with no family counter next to it: the written
+trigger ("any significance claim") fired. Ruling — option A plus half of
+option B, and **the narrowing itself is recorded here because narrowing a
+trigger after it fired is exactly the gesture a jury must be able to
+re-read**: (i) the trigger now targets significance claims that are **OOS or
+selection-derived**; in-sample descriptive tables are exempt ON CONDITION that
+they carry an explicit "in-sample, descriptive, not used to conclude" mention
+in the same generated line; (ii) the generator nevertheless cites the family
+counter inside the Significance line itself, interpolated from
+`FAMILY_TESTS_COUNT` (pinned to this entry by test) — it costs one line and
+makes the narrowing harmless.
+
+**Turns 🔴 if** an OOS or selection-derived significance claim is published
+without the family count, or if an in-sample table claims significance without
+its "in-sample, descriptive" mention, or if the counter passes 5 without a
+formal multiple-comparisons correction (deflated Sharpe ratio / Bonferroni)
+entering the protocol.
 
 *Opened 2026-07-28 (B4-A block).*
 
@@ -284,4 +305,5 @@ and the 1h series in `manifest.json` must not be mistaken for added power.
 | B13 | Mutation audit: dirty base accepted, no restoration guarantee on death | 5, 7 | 2026-07-28 | `b9bdae8` (D2 + its gate fix; `9f8c0ea` alone shipped red — see the D2 gate incident above) |
 | B7 | Rule 1's "hors git" clause: amended in writing (50 MB threshold), not silently deviated from | 1, 7 | 2026-07-27 | commit 10 (`f59d284`) — AMENDEMENTS section of POSTMORTEM.md |
 | — | D2 gate incident: pipe swallowed format/mypy failures, D2 pushed red | 4, 7 | 2026-07-28 | `b9bdae8` — runs 30322209543 (failure) → 30322287611 (success) |
-| B4 | Span extension 2017-08-17 → 2026-06-30: power floor 2.58 → 1.50, four predictions confronted | 1 | 2026-07-28 | B4-B — this commit |
+| B4 | Span extension 2017-08-17 → 2026-06-30: power floor 2.58 → 1.50, four predictions confronted | 1 | 2026-07-28 | `9a7fd1c` (B4-B) |
+| B14 | README mutation table hand-written, tied to nothing: now a generated block, `mutation_audit --check` byte-compares it (weekly workflow + tamper test) | 7 | 2026-07-28 | B14 — this commit, three days ahead of its 2026-07-31 due date |
